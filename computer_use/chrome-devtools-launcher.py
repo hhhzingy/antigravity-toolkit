@@ -9,6 +9,9 @@ Automatically inspects `DevToolsActivePort` for both Google Chrome and Microsoft
 - If Chrome has remote debugging enabled (`chrome://inspect/#remote-debugging`) and is
   listening locally, connects via `--autoConnect` (or `--wsEndpoint` fallback).
 - Otherwise falls back cleanly to `--autoConnect` so standard behavior is preserved.
+- Binds the spawned child process tree (`cmd.exe` -> `node.exe`) to a Windows Job
+  Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, ensuring zero orphan `node.exe`
+  processes when MCP servers are refreshed or terminated.
 """
 
 from __future__ import annotations
@@ -16,9 +19,83 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+
+_JOB_HANDLE: int | None = None
+
+
+def _bind_kill_on_close_job(proc: subprocess.Popen) -> None:
+    """Attach `proc` to a Win32 Job Object so `cmd.exe`/`node.exe` die with this wrapper."""
+    global _JOB_HANDLE
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        k32 = ctypes.windll.kernel32
+        k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        k32.SetInformationJobObject.restype = wintypes.BOOL
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k32.AssignProcessToJobObject.restype = wintypes.BOOL
+
+        hjob = k32.CreateJobObjectW(None, None)
+        if not hjob:
+            return
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if k32.SetInformationJobObject(hjob, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            if k32.AssignProcessToJobObject(hjob, wintypes.HANDLE(int(proc._handle))):
+                _JOB_HANDLE = int(hjob)
+                return
+
+        k32.CloseHandle(hjob)
+    except Exception:
+        pass
 
 
 def _is_port_listening(port: int) -> bool:
@@ -89,7 +166,29 @@ def main() -> int:
         cmd = [mcp_bin, "--autoConnect", "--no-usage-statistics", *extra_args]
 
     proc = subprocess.Popen(cmd)
-    return proc.wait()
+    _bind_kill_on_close_job(proc)
+
+    def _forward_stop(_signum: int, _frame: object) -> None:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    for sig_name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _forward_stop)
+            except Exception:
+                pass
+
+    try:
+        return proc.wait()
+    except KeyboardInterrupt:
+        if proc.poll() is None:
+            proc.terminate()
+        return proc.wait()
 
 
 if __name__ == "__main__":

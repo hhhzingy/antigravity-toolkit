@@ -13,33 +13,84 @@ function Fail-Friendly($MissingItem, $WhyNeeded, $FixHint) {
     exit 1
 }
 
+function Test-UsablePython($ExePath) {
+    if (-not $ExePath -or -not (Test-Path $ExePath) -or ($ExePath -like "*\WindowsApps\*")) {
+        return $false
+    }
+    try {
+        $Ver = & $ExePath -B -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $Ver) {
+            $Parts = $Ver.Trim().Split(".")
+            if ([int]$Parts[0] -eq 3 -and [int]$Parts[1] -ge 10) {
+                return $true
+            }
+        }
+    } catch {}
+    return $false
+}
+
 function Resolve-WorkingPython {
     foreach ($Candidate in @("python", "python3")) {
         $Cmd = Get-Command $Candidate -ErrorAction SilentlyContinue
-        if ($Cmd -and ($Cmd.Source -notlike "*\WindowsApps\*")) {
-            try {
-                $Ver = & $Cmd.Source -B -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-                if ($LASTEXITCODE -eq 0 -and $Ver) {
-                    $Parts = $Ver.Trim().Split(".")
-                    if ([int]$Parts[0] -eq 3 -and [int]$Parts[1] -ge 10) {
-                        return $Cmd.Source
-                    }
-                }
-            } catch {}
+        if ($Cmd -and (Test-UsablePython $Cmd.Source)) {
+            return $Cmd.Source
         }
     }
     $PyLauncher = Get-Command py -ErrorAction SilentlyContinue
     if ($PyLauncher) {
         try {
             $Resolved = & $PyLauncher.Source -3 -B -c "import sys; print(sys.executable)" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $Resolved -and (Test-Path $Resolved.Trim())) {
-                $Ver = & $Resolved.Trim() -B -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-                $Parts = $Ver.Trim().Split(".")
-                if ([int]$Parts[0] -eq 3 -and [int]$Parts[1] -ge 10) {
-                    return $Resolved.Trim()
-                }
+            if ($LASTEXITCODE -eq 0 -and $Resolved -and (Test-UsablePython $Resolved.Trim())) {
+                return $Resolved.Trim()
             }
         } catch {}
+    }
+
+    # Fallback 1: Windows Registry (HKCU / HKLM PythonCore)
+    foreach ($RegHive in @("HKCU:\Software\Python\PythonCore", "HKLM:\Software\Python\PythonCore")) {
+        if (Test-Path $RegHive) {
+            $SubKeys = Get-ChildItem -Path $RegHive -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+            foreach ($Key in $SubKeys) {
+                $InstallKey = Join-Path $Key.PSPath "InstallPath"
+                if (Test-Path $InstallKey) {
+                    $Props = Get-ItemProperty -Path $InstallKey -ErrorAction SilentlyContinue
+                    $CandidateExe = if ($Props.ExecutablePath) { $Props.ExecutablePath } elseif ($Props.'(default)') { Join-Path $Props.'(default)' "python.exe" } else { $null }
+                    if (Test-UsablePython $CandidateExe) {
+                        return $CandidateExe
+                    }
+                }
+            }
+        }
+    }
+
+    # Fallback 2: Common user & multi-drive Conda / Python directories
+    $FallbackDirs = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python"),
+        (Join-Path $env:USERPROFILE "miniconda3"),
+        (Join-Path $env:USERPROFILE "anaconda3"),
+        (Join-Path $env:ProgramData "miniconda3"),
+        (Join-Path $env:ProgramData "anaconda3")
+    )
+    foreach ($Drive in @("C:", "D:", "E:")) {
+        foreach ($Sub in @("miniconda3", "anaconda3", "Miniconda3", "Anaconda3", "Software\miniconda3", "Software\anaconda3")) {
+            $FallbackDirs += "$Drive\$Sub"
+        }
+    }
+    foreach ($Root in $FallbackDirs) {
+        if ($Root -and (Test-Path $Root)) {
+            $DirectExe = Join-Path $Root "python.exe"
+            if (Test-UsablePython $DirectExe) {
+                return $DirectExe
+            }
+            $Nested = Get-ChildItem -Path $Root -Filter "python.exe" -Depth 2 -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -notlike "*\venv\*" } |
+                Sort-Object FullName -Descending
+            foreach ($Item in $Nested) {
+                if (Test-UsablePython $Item.FullName) {
+                    return $Item.FullName
+                }
+            }
+        }
     }
     return $null
 }
@@ -152,9 +203,24 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to apply windows-mcp-speedup.patch"
     }
-    & $UvExe sync
-    if ($LASTEXITCODE -ne 0) {
-        throw "uv sync failed in Windows-MCP"
+    $WinVenvPy = Join-Path $WinMcpDir ".venv\Scripts\python.exe"
+    $WinEntryExe = Join-Path $WinMcpDir ".venv\Scripts\windows-mcp.exe"
+    $WinAlreadyReady = $false
+    if ((Test-Path $WinVenvPy) -and (Test-Path $WinEntryExe)) {
+        $PrevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & $WinVenvPy -B -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('windows_mcp') else 1)" >$null 2>$null
+        if ($LASTEXITCODE -eq 0) { $WinAlreadyReady = $true }
+        $ErrorActionPreference = $PrevEap
+    }
+    $WinLocked = [bool](Get-Process -Name "windows-mcp" -ErrorAction SilentlyContinue)
+    if ($WinAlreadyReady -and $WinLocked) {
+        Write-Host "  [OK] Source patch applied in-place (active windows-mcp.exe detected; takes effect on MCP Refresh)." -ForegroundColor Green
+    } else {
+        & $UvExe sync
+        if ($LASTEXITCODE -ne 0) {
+            throw "uv sync failed in Windows-MCP"
+        }
     }
 } finally {
     Pop-Location
@@ -178,13 +244,38 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to apply computer-control-mcp-opti.patch"
     }
-    if (-not (Test-Path (Join-Path $OcrMcpDir ".venv\Scripts\python.exe"))) {
-        & $UvExe venv
+    $OcrVenvPy = Join-Path $OcrMcpDir ".venv\Scripts\python.exe"
+    $OcrEntryExe = Join-Path $OcrMcpDir ".venv\Scripts\computer-control-mcp.exe"
+    $OcrAlreadyReady = $false
+    if ((Test-Path $OcrVenvPy) -and (Test-Path $OcrEntryExe)) {
+        $PrevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & $OcrVenvPy -B -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('computer_control_mcp') and importlib.util.find_spec('mcp') else 1)" >$null 2>$null
+        if ($LASTEXITCODE -eq 0) { $OcrAlreadyReady = $true }
+        $ErrorActionPreference = $PrevEap
     }
-    & $UvExe pip install -e .
-    & $UvExe sync
-    if ($LASTEXITCODE -ne 0) {
-        throw "uv sync failed in computer-control-mcp"
+    if ($OcrAlreadyReady) {
+        $OcrLocked = [bool](Get-Process -Name "computer-control-mcp" -ErrorAction SilentlyContinue)
+        if ($OcrLocked) {
+            Write-Host "  [OK] Source patch applied in-place (active computer-control-mcp.exe detected; takes effect on MCP Refresh)." -ForegroundColor Green
+        } else {
+            & $UvExe sync --inexact
+            if ($LASTEXITCODE -ne 0) {
+                throw "uv sync failed in computer-control-mcp"
+            }
+        }
+    } else {
+        if (-not (Test-Path $OcrVenvPy)) {
+            & $UvExe venv
+        }
+        & $UvExe pip install -e .
+        if ($LASTEXITCODE -ne 0) {
+            throw "uv pip install -e . failed in computer-control-mcp"
+        }
+        & $UvExe sync
+        if ($LASTEXITCODE -ne 0) {
+            throw "uv sync failed in computer-control-mcp"
+        }
     }
 } finally {
     Pop-Location

@@ -68,8 +68,8 @@ cd antigravity-toolkit
 <details>
 <summary>💡 习惯命令行参数一键直达？（点击展开）</summary>
 
-- **Windows ([install.ps1](./install.ps1))**：`powershell -ExecutionPolicy Bypass -File .\install.ps1 -All`（按需单装用 `-Module 2`，体检用 `-Doctor`）
-- **Linux ([install.sh](./install.sh))**：`bash ./install.sh --all`（按需单装用 `--module 2`，体检用 `--doctor`）
+- **Windows ([install.ps1](./install.ps1))**：`powershell -ExecutionPolicy Bypass -File .\install.ps1 -All`（按需单装用 `-Module 2`，体检用 `-Doctor`，卸载用 `-Uninstall` 或 `-Uninstall -Module 2`）
+- **Linux ([install.sh](./install.sh))**：`bash ./install.sh --all`（按需单装用 `--module 2`，体检用 `--doctor`，卸载用 `--uninstall` 或 `--uninstall --module 2`）
 </details>
 
 **3. 运行健康自检**（检查依赖环境、浏览器直连开关与各模块状态）
@@ -87,7 +87,7 @@ python scripts/doctor.py   # Ubuntu/Linux 若无 python 别名请运行 python3 
 ### ⚡ 桌面与浏览器极速控制（`computer_use` · [模块文档](./computer_use/README.md)）
 - **首次开启直连（点 2 下）**：在日常 Chrome 地址栏打开 `chrome://inspect/#remote-debugging`（Edge 打开 `edge://inspect/#remote-debugging`）勾选 **Enable remote debugging**，再到 Antigravity 的 **MCP Servers** 点击 **Refresh**。
 - **日常体验**：直接让 Agent 查看已打开的网页或点击桌面软件；AI 操作鼠标时**轻轻晃一下鼠标**即可立即接管控制权。
-- **单独装卸**：安装运行 `computer_use/setup_other_device.ps1`（Win）或 `computer_use/setup_linux.sh`（Linux）；卸载只需移除 `~/.gemini/config/mcp_config.json` 中对应服务项并删除 `~/mcp-gui-workspace`。
+- **一键装卸**：安装运行 `computer_use/setup_other_device.ps1`（Win）或 `computer_use/setup_linux.sh`（Linux）；卸载运行 `powershell -ExecutionPolicy Bypass -File .\computer_use\uninstall_computer_use.ps1`（Win）或 `bash ./computer_use/uninstall_computer_use.sh`（Linux）。
 
 ### 🛡️ 防误关系统托盘守护（`close_guard` · [模块文档](./close_guard/README.md)）
 - **无感守护**：安装后自动后台运行并设为登录自启；点 `✕` 或按 `Alt+F4`（Linux 含 `Ctrl+Q`）自动隐藏到托盘，后台任务照常运行。

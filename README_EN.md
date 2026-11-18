@@ -87,7 +87,7 @@ Every module lives inside your user home directory and can be used or removed in
 ### ⚡ Faster Desktop & Browser Control (`computer_use` · [Module Guide](./computer_use/README.md))
 - **One-time browser toggle (2 clicks)**: Open `chrome://inspect/#remote-debugging` in Chrome (or `edge://inspect/#remote-debugging` in Edge), check **Enable remote debugging**, then click **Refresh** in Antigravity's **MCP Servers** panel.
 - **Everyday use**: Ask your Agent to read your open browser tabs or interact with desktop apps; **shake your mouse** anytime to take back instant control.
-- **Standalone install / uninstall**: Install via `computer_use/setup_other_device.ps1` (Win) or `computer_use/setup_linux.sh` (Linux); uninstall by removing its server entries in `~/.gemini/config/mcp_config.json` and deleting `~/mcp-gui-workspace`.
+- **Standalone install / uninstall**: Install via `computer_use/setup_other_device.ps1` (Win) or `computer_use/setup_linux.sh` (Linux); uninstall cleanly via `powershell -ExecutionPolicy Bypass -File .\computer_use\uninstall_computer_use.ps1` (Win) or `bash ./computer_use/uninstall_computer_use.sh` (Linux).
 
 ### 🛡️ Close-to-Tray Guard (`close_guard` · [Module Guide](./close_guard/README.md))
 - **Automatic protection**: Runs silently in the background with login auto-start; clicking `X` or pressing `Alt+F4` (`Ctrl+Q` on Linux) hides Antigravity to the system tray while tasks keep running.

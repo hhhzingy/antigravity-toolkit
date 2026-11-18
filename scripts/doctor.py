@@ -162,6 +162,35 @@ def _find_windows_pythonw() -> Optional[Path]:
         home / "anaconda3",
         app_data / "uv" / "python",
     ]
+    if IS_WINDOWS:
+        prog_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        search_roots.extend([Path(prog_data) / "miniconda3", Path(prog_data) / "anaconda3"])
+        for drive in ("C:", "D:", "E:"):
+            for sub in ("miniconda3", "anaconda3", "Miniconda3", "Anaconda3", r"Software\miniconda3", r"Software\anaconda3"):
+                search_roots.append(Path(f"{drive}\\{sub}"))
+        try:
+            import winreg
+
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    with winreg.OpenKey(hive, r"Software\Python\PythonCore") as core_key:
+                        idx = 0
+                        while True:
+                            try:
+                                ver_tag = winreg.EnumKey(core_key, idx)
+                                idx += 1
+                                with winreg.OpenKey(core_key, f"{ver_tag}\\InstallPath") as ip_key:
+                                    install_dir, _ = winreg.QueryValueEx(ip_key, "")
+                                    if install_dir:
+                                        pw_reg = Path(str(install_dir)) / "pythonw.exe"
+                                        if pw_reg.is_file():
+                                            candidates.append(pw_reg)
+                            except OSError:
+                                break
+                except OSError:
+                    pass
+        except Exception:
+            pass
     for root in search_roots:
         if root.is_dir():
             pw_direct = root / "pythonw.exe"

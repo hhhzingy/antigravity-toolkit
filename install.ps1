@@ -8,11 +8,12 @@
     所有增强组件均采用外挂与标准配置方式工作，不修改 Antigravity 核心安装文件。
 
 .EXAMPLE
-    .\install.ps1               # 启动交互式菜单（推荐新手使用）
-    .\install.ps1 -All          # 一键安装全部推荐增强模块
-    .\install.ps1 -Module 1     # 按编号安装指定模块（如 1, 2, 3）
-    .\install.ps1 -Doctor       # 运行环境与安装状态健康自检
-    .\install.ps1 -Uninstall    # 卸载防误关系统托盘守护
+    .\install.ps1                       # 启动交互式菜单（推荐新手使用）
+    .\install.ps1 -All                  # 一键安装全部推荐增强模块
+    .\install.ps1 -Module 1             # 按编号安装指定模块（如 1, 2, 3）
+    .\install.ps1 -Doctor               # 运行环境与安装状态健康自检
+    .\install.ps1 -Uninstall            # 卸载全部增强模块
+    .\install.ps1 -Uninstall -Module 2  # 按编号单独卸载指定模块（如 1, 2, 3）
 #>
 
 [CmdletBinding()]
@@ -54,13 +55,14 @@ function Show-Usage {
     Write-Host ""
     Write-Host "Antigravity Toolkit (Windows) 使用说明" -ForegroundColor Cyan
     Write-Host "------------------------------------------------------------" -ForegroundColor DarkGray
-    Write-Host "  .\install.ps1                启动可视化数字菜单（默认推荐）"
-    Write-Host "  .\install.ps1 -All           一键安装全部推荐增强模块"
-    Write-Host "  .\install.ps1 -Module 1      按编号安装指定模块 (如 1, 2, 3)"
-    Write-Host "  .\install.ps1 -Module 2,3    同时安装多个指定模块"
-    Write-Host "  .\install.ps1 -Doctor        运行环境与安装状态自检 (Doctor)"
-    Write-Host "  .\install.ps1 -Uninstall     停止并卸载防误关系统托盘守护"
-    Write-Host "  .\install.ps1 -Help          显示本帮助说明"
+    Write-Host "  .\install.ps1                       启动可视化数字菜单（默认推荐）"
+    Write-Host "  .\install.ps1 -All                  一键安装全部推荐增强模块"
+    Write-Host "  .\install.ps1 -Module 1             按编号安装指定模块 (如 1, 2, 3)"
+    Write-Host "  .\install.ps1 -Module 2,3           同时安装多个指定模块"
+    Write-Host "  .\install.ps1 -Doctor               运行环境与安装状态自检 (Doctor)"
+    Write-Host "  .\install.ps1 -Uninstall            卸载全部已安装增强模块"
+    Write-Host "  .\install.ps1 -Uninstall -Module 2  单独卸载指定模块 (如 1, 2, 3)"
+    Write-Host "  .\install.ps1 -Help                 显示本帮助说明"
     Write-Host ""
 }
 
@@ -87,21 +89,46 @@ function Get-RealPythonExe {
         }
     }
 
+    foreach ($regHive in @("HKCU:\Software\Python\PythonCore", "HKLM:\Software\Python\PythonCore")) {
+        if (Test-Path $regHive) {
+            $subKeys = Get-ChildItem -Path $regHive -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+            foreach ($key in $subKeys) {
+                $installKey = Join-Path $key.PSPath "InstallPath"
+                if (Test-Path $installKey) {
+                    $props = Get-ItemProperty -Path $installKey -ErrorAction SilentlyContinue
+                    $exe = if ($props.ExecutablePath) { $props.ExecutablePath } elseif ($props.'(default)') { Join-Path $props.'(default)' "python.exe" } else { $null }
+                    if ($exe -and (Test-Path $exe) -and ($exe -notlike "*\WindowsApps\*")) {
+                        return $exe
+                    }
+                }
+            }
+        }
+    }
+
     $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $env:USERPROFILE "AppData\Local" }
     $appData = if ($env:APPDATA) { $env:APPDATA } else { Join-Path $env:USERPROFILE "AppData\Roaming" }
 
-    foreach ($root in @(
+    $searchRoots = @(
         (Join-Path $localAppData "Programs\Python"),
         (Join-Path $env:USERPROFILE "miniconda3"),
         (Join-Path $env:USERPROFILE "anaconda3"),
+        (Join-Path $env:ProgramData "miniconda3"),
+        (Join-Path $env:ProgramData "anaconda3"),
         (Join-Path $appData "uv\python")
-    )) {
-        if (Test-Path $root) {
+    )
+    foreach ($drive in @("C:", "D:", "E:")) {
+        foreach ($sub in @("miniconda3", "anaconda3", "Miniconda3", "Anaconda3", "Software\miniconda3", "Software\anaconda3")) {
+            $searchRoots += "$drive\$sub"
+        }
+    }
+
+    foreach ($root in $searchRoots) {
+        if ($root -and (Test-Path $root)) {
             $direct = Join-Path $root "python.exe"
             if (Test-Path $direct) {
                 return $direct
             }
-            $nested = Get-ChildItem -Path $root -Filter "python.exe" -Recurse -ErrorAction SilentlyContinue |
+            $nested = Get-ChildItem -Path $root -Filter "python.exe" -Depth 2 -ErrorAction SilentlyContinue |
                 Where-Object { $_.FullName -notlike "*\venv\*" } |
                 Sort-Object FullName -Descending |
                 Select-Object -First 1
@@ -123,7 +150,7 @@ function Invoke-PowerShellScript {
 
     $fullPath = Join-Path $RepoRoot $RelativePath
     if (-not (Test-Path $fullPath)) {
-        Write-Host "[错误] 未找到安装脚本: $fullPath" -ForegroundColor Red
+        Write-Host "[错误] 未找到脚本: $fullPath" -ForegroundColor Red
         Write-Host "请确认您在完整的 antigravity-toolkit 仓库目录中运行此脚本。" -ForegroundColor Yellow
         return $false
     }
@@ -178,6 +205,38 @@ function Invoke-ModuleInstall {
     }
 }
 
+function Invoke-ModuleUninstall {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Id
+    )
+
+    switch ($Id.Trim().ToLowerInvariant()) {
+        { $_ -in @("1", "computer_use", "computer-use") } {
+            return Invoke-PowerShellScript `
+                -RelativePath "computer_use\uninstall_computer_use.ps1" `
+                -Title "卸载 [模块 1] 桌面与浏览器极速操控 (Computer Use)"
+        }
+        { $_ -in @("2", "close_guard", "close-guard") } {
+            return Invoke-PowerShellScript `
+                -RelativePath "close_guard\uninstall_close_guard.ps1" `
+                -Title "卸载 [模块 2] 防误关系统托盘驻留守护 (Close Guard)"
+        }
+        { $_ -in @("3", "branch_conversation", "branch-conversation", "branch") } {
+            return Invoke-PowerShellScript `
+                -RelativePath "branch_conversation\uninstall_branch_tool.ps1" `
+                -Title "卸载 [模块 3] 历史对话任意轮次分支工具 (Branch Conversation)"
+        }
+        { $_ -in @("all", "a") } {
+            return Invoke-UninstallAll
+        }
+        default {
+            Write-Host "[错误] 未知的卸载模块标识: '$Id'。可选值为 1、2、3 或 all。" -ForegroundColor Red
+            return $false
+        }
+    }
+}
+
 function Invoke-InstallAll {
     Write-Host ""
     Write-Host "即将依次为您安装全部 Antigravity 推荐增强模块..." -ForegroundColor Cyan
@@ -197,6 +256,15 @@ function Invoke-InstallAll {
     }
     Write-Host "============================================================" -ForegroundColor Cyan
     return ($ok1 -and $ok2 -and $ok3)
+}
+
+function Invoke-UninstallAll {
+    Write-Host ""
+    Write-Host "即将依次清理并卸载全部 Antigravity Toolkit 增强模块..." -ForegroundColor Yellow
+    $u1 = Invoke-ModuleUninstall -Id "1"
+    $u2 = Invoke-ModuleUninstall -Id "2"
+    $u3 = Invoke-ModuleUninstall -Id "3"
+    return ($u1 -and $u2 -and $u3)
 }
 
 function Invoke-Doctor {
@@ -221,10 +289,34 @@ function Invoke-Doctor {
     return ($LASTEXITCODE -eq 0)
 }
 
-function Invoke-UninstallCloseGuard {
-    return Invoke-PowerShellScript `
-        -RelativePath "close_guard\uninstall_close_guard.ps1" `
-        -Title "卸载防误关系统托盘守护 (Close Guard)"
+function Show-UninstallMenu {
+    Write-Host ""
+    Write-Host "----------------------------------------------------------------" -ForegroundColor DarkYellow
+    Write-Host "  请选择要卸载的模块：" -ForegroundColor Yellow
+    Write-Host "  [1] 卸载模块 1: 桌面与浏览器极速操控 (Computer Use)"
+    Write-Host "  [2] 卸载模块 2: 防误关系统托盘驻留守护 (Close Guard)"
+    Write-Host "  [3] 卸载模块 3: 历史对话任意轮次分支工具 (Branch Conversation)"
+    Write-Host "  [A] 卸载全部增强模块"
+    Write-Host "  [B] 返回主菜单"
+    Write-Host "----------------------------------------------------------------" -ForegroundColor DarkYellow
+
+    if ([Console]::IsInputRedirected) {
+        $subRaw = [Console]::In.ReadLine()
+    } else {
+        $subRaw = Read-Host "请输入卸载选项 [1/2/3/A/B]"
+    }
+    $subChoice = if ($null -ne $subRaw) { $subRaw.Trim().ToUpperInvariant() } else { "B" }
+    switch ($subChoice) {
+        "1" { [void](Invoke-ModuleUninstall -Id "1") }
+        "2" { [void](Invoke-ModuleUninstall -Id "2") }
+        "3" { [void](Invoke-ModuleUninstall -Id "3") }
+        "A" { [void](Invoke-UninstallAll) }
+        "B" { return }
+        ""  { return }
+        default {
+            Write-Host "[提示] 已取消卸载或未识别选项 '$subRaw'。" -ForegroundColor Gray
+        }
+    }
 }
 
 function Show-InteractiveMenu {
@@ -244,7 +336,7 @@ function Show-InteractiveMenu {
         Write-Host ""
         Write-Host "  [A] 一键安装全部推荐优化" -ForegroundColor Cyan
         Write-Host "  [D] 运行环境与状态自检 (Doctor)" -ForegroundColor Yellow
-        Write-Host "  [U] 卸载托盘守护" -ForegroundColor DarkYellow
+        Write-Host "  [U] 卸载已安装模块 (按模块选卸 / 全卸)" -ForegroundColor DarkYellow
         Write-Host "  [Q] 退出" -ForegroundColor Gray
         Write-Host "----------------------------------------------------------------" -ForegroundColor DarkGray
 
@@ -265,7 +357,7 @@ function Show-InteractiveMenu {
             "3" { [void](Invoke-ModuleInstall -Id "3") }
             "A" { [void](Invoke-InstallAll) }
             "D" { [void](Invoke-Doctor) }
-            "U" { [void](Invoke-UninstallCloseGuard) }
+            "U" { Show-UninstallMenu }
             "Q" {
                 Write-Host "已退出安装向导，祝您使用愉快！" -ForegroundColor Cyan
                 break
@@ -310,27 +402,39 @@ if (-not $hasCliAction) {
 
 $overallSuccess = $true
 
-if ($All) {
-    if (-not (Invoke-InstallAll)) {
-        $overallSuccess = $false
-    }
-}
-
-if ($Module -and $Module.Count -gt 0) {
-    foreach ($entry in $Module) {
-        foreach ($subId in ($entry -split ",")) {
-            if (-not [string]::IsNullOrWhiteSpace($subId)) {
-                if (-not (Invoke-ModuleInstall -Id $subId)) {
-                    $overallSuccess = $false
+if ($Uninstall) {
+    if ($Module -and $Module.Count -gt 0) {
+        foreach ($entry in $Module) {
+            foreach ($subId in ($entry -split ",")) {
+                if (-not [string]::IsNullOrWhiteSpace($subId)) {
+                    if (-not (Invoke-ModuleUninstall -Id $subId)) {
+                        $overallSuccess = $false
+                    }
                 }
             }
         }
+    } else {
+        if (-not (Invoke-UninstallAll)) {
+            $overallSuccess = $false
+        }
     }
-}
+} else {
+    if ($All) {
+        if (-not (Invoke-InstallAll)) {
+            $overallSuccess = $false
+        }
+    }
 
-if ($Uninstall) {
-    if (-not (Invoke-UninstallCloseGuard)) {
-        $overallSuccess = $false
+    if ($Module -and $Module.Count -gt 0) {
+        foreach ($entry in $Module) {
+            foreach ($subId in ($entry -split ",")) {
+                if (-not [string]::IsNullOrWhiteSpace($subId)) {
+                    if (-not (Invoke-ModuleInstall -Id $subId)) {
+                        $overallSuccess = $false
+                    }
+                }
+            }
+        }
     }
 }
 

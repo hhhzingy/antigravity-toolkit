@@ -361,6 +361,11 @@ user32.GetForegroundWindow.argtypes = []
 user32.GetForegroundWindow.restype = wintypes.HWND
 user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
 user32.FindWindowW.restype = wintypes.HWND
+try:
+    user32.ChangeWindowMessageFilterEx.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.DWORD, wintypes.LPVOID]
+    user32.ChangeWindowMessageFilterEx.restype = wintypes.BOOL
+except Exception:
+    pass
 user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
@@ -1665,6 +1670,14 @@ class AntigravityCloseGuard:
             if mutex:
                 kernel32.CloseHandle(mutex)
             return
+
+        # Allow sandboxed / lower-integrity Agent processes (exebox) to trigger ONLY
+        # read-only menu preview messages across UIPI (never quit/exec commands).
+        try:
+            for preview_msg in (WM_APP_SHOW_MENU_PREVIEW, WM_APP_HIDE_MENU_PREVIEW):
+                user32.ChangeWindowMessageFilterEx(self.msg_hwnd, preview_msg, 1, None)  # MSGFLT_ALLOW = 1
+        except Exception:
+            pass
 
         if self.preview_only:
             self._show_tray_menu_preview(0)

@@ -138,9 +138,9 @@ Ubuntu 默认登录界面可能运行在 Wayland 模式下（Wayland 出于隔�
 - `mouse_takeover_units = 500`（可选）：触发接管所需的鼠标晃动幅度（默认 `500`，调小如 `200` 则轻轻一碰就接管，调大如 `1000` 则大幅晃动才接管）。
 
 ### 4. 如何干净卸载或恢复默认设置？
-本模块所有文件均独立存放在用户目录，**零修改系统核心文件**：
-1. 打开 `~/.gemini/config/mcp_config.json`（及 `~/.gemini/antigravity/mcp_config.json`），删除 `mcpServers` 下的 `chrome-devtools`、`*-uia-mcp`、`*-ocr-mcp` 三项并在 Antigravity 中点击 `Refresh`；
-2. 按需删除工作目录 `~/mcp-gui-workspace`、规则文件 `~/.gemini/config/rules/gui-control.md` 以及配置文件 `~/.windows-mcp`（或 `~/.linux-mcp`）即可彻底恢复原状。
+本模块所有文件均独立存放在用户目录，**零修改系统核心文件**，支持一行命令无损卸载（自动保留你的其他 MCP 服务配置与其他增强模块）：
+- **Windows**：`powershell -ExecutionPolicy Bypass -File .\computer_use\uninstall_computer_use.ps1`（或在根目录运行 `.\install.ps1 -Uninstall -Module 1`）
+- **Linux**：`bash ./computer_use/uninstall_computer_use.sh`（或在根目录运行 `bash ./install.sh --uninstall --module 1`）
 
 ---
 
@@ -149,7 +149,9 @@ Ubuntu 默认登录界面可能运行在 Wayland 模式下（Wayland 出于隔�
 | 文件 / 目录 | 适用平台 | 用途说明 |
 | :--- | :--- | :--- |
 | [`setup_other_device.ps1`](./setup_other_device.ps1) | Windows | Windows 一键环境自检、引擎拉取、补丁应用与配置写入脚本 |
+| [`uninstall_computer_use.ps1`](./uninstall_computer_use.ps1) | Windows | Windows 一键无损卸载清理脚本（保留其他 MCP 服务与模块） |
 | [`setup_linux.sh`](./setup_linux.sh) | Linux (X11) | Ubuntu / Debian 一键依赖检查、双引擎安装与配置写入脚本 |
+| [`uninstall_computer_use.sh`](./uninstall_computer_use.sh) | Linux (X11) | Linux 一键无损卸载清理脚本（保留其他 MCP 服务与模块） |
 | [`linux-gui-mcp/`](./linux-gui-mcp/) | Linux (X11) | Linux 极速桌面视觉 + 焦点窗口控件识别引擎与多浏览器智能启动器 |
 | [`windows-mcp-speedup.patch`](./windows-mcp-speedup.patch) | Windows | `Windows-MCP` 纯视觉提速与单焦点窗口扫描优化补丁 |
 | [`computer-control-mcp-opti.patch`](./computer-control-mcp-opti.patch) | Windows / Linux | 本地 OCR 高分屏缩放还原、单窗口坐标偏移补偿与多屏安全裁剪补丁 |

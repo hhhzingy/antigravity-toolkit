@@ -63,12 +63,36 @@ if ($Candidates.Count -eq 0) {
 }
 
 if ($Candidates.Count -eq 0) {
-    foreach ($fallback in @(
+    foreach ($RegHive in @("HKCU:\Software\Python\PythonCore", "HKLM:\Software\Python\PythonCore")) {
+        if (Test-Path $RegHive) {
+            Get-ChildItem -Path $RegHive -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object {
+                $InstallKey = Join-Path $_.PSPath "InstallPath"
+                if (Test-Path $InstallKey) {
+                    $Props = Get-ItemProperty -Path $InstallKey -ErrorAction SilentlyContinue
+                    $InstallDir = if ($Props.'(default)') { $Props.'(default)' } elseif ($Props.ExecutablePath) { Split-Path -Parent $Props.ExecutablePath } else { $null }
+                    if ($InstallDir) {
+                        $pw = Join-Path $InstallDir "pythonw.exe"
+                        if (Test-Path $pw) { $Candidates += $pw }
+                    }
+                }
+            }
+        }
+    }
+}
+
+if ($Candidates.Count -eq 0) {
+    $FallbackPaths = @(
         "$env:USERPROFILE\anaconda3\pythonw.exe",
         "$env:USERPROFILE\miniconda3\pythonw.exe",
         "$env:ProgramData\anaconda3\pythonw.exe",
         "$env:ProgramData\miniconda3\pythonw.exe"
-    )) {
+    )
+    foreach ($Drive in @("C:", "D:", "E:")) {
+        foreach ($Sub in @("anaconda3", "miniconda3", "Anaconda3", "Miniconda3", "Software\anaconda3", "Software\miniconda3")) {
+            $FallbackPaths += "$Drive\$Sub\pythonw.exe"
+        }
+    }
+    foreach ($fallback in $FallbackPaths) {
         if (Test-Path $fallback) { $Candidates += $fallback }
     }
 }
