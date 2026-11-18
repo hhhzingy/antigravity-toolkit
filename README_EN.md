@@ -157,6 +157,17 @@ If Antigravity Toolkit saved an active AI task or spared you from logging back i
 
 ---
 
+## 🙏 Acknowledgments & Open-Source Credits
+
+The `computer_use` (Faster Desktop & Browser Control) module integrates, patches, and draws inspiration from the following great open-source projects (this repository distributes only original tools, setup scripts, and incremental `.patch` files; upstream repositories are fetched on demand during setup under their respective licenses):
+
+- **[CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP)** (MIT): Serves as the foundation for Windows native desktop & vision control, enhanced via `windows-mcp-speedup.patch` for pure-vision speedups and active-window-only scanning. Our Linux X11 engine (`linux-gui-mcp`) also aligns with its MCP tool interface and mouse-shake human takeover design.
+- **[AB498/computer-control-mcp](https://github.com/AB498/computer-control-mcp)** (MIT): Serves as the foundation for cross-platform local OCR and hardware-accelerated window capture, enhanced via `computer-control-mcp-opti.patch` with HiDPI scaling awareness, single-window coordinate offset restoration, and multi-monitor bounds clamping.
+- **[ChromeDevTools/chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)** (Apache-2.0): Powers direct browser control, wrapped here with cross-platform auto-connect launchers and routing rules to reuse your everyday logged-in Chrome / Edge tabs.
+- Special thanks as well to [RapidOCR](https://github.com/RapidAI/RapidOCR), [windows-capture](https://github.com/NiiightmareXD/windows-capture), [python-mss](https://github.com/BoboTiG/python-mss), [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk), and [Astral uv](https://github.com/astral-sh/uv).
+
+---
+
 ## 📄 License
 
-Released under the [MIT License](./LICENSE). Free to use, modify, and share.
+Original content in this repository is released under the [MIT License](./LICENSE). Free to use, modify, and share.

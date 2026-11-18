@@ -157,6 +157,17 @@ Windows 默认会把新加入的托盘图标收进折叠区。点击任务栏右
 
 ---
 
+## 🙏 致谢与开源项目声明
+
+本工具集中的 `computer_use`（桌面与浏览器极速控制）模块在构建过程中集成、打补丁优化并借鉴了以下优秀的开源项目（本仓库仅包含原创工具、部署脚本与增量 `.patch` 补丁，上游仓库在安装时按需拉取，相关版权与许可归各原项目所有）：
+
+- **[CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP)**（MIT）：作为 Windows 原生桌面与视觉控制引擎基础，本仓库通过 `windows-mcp-speedup.patch` 对其进行了纯视觉极速模式与单焦点窗口扫描改造；同时本仓库自研的 Linux 引擎 `linux-gui-mcp` 也参考并对齐了其工具接口与“晃动鼠标瞬间接管”安全设计。
+- **[AB498/computer-control-mcp](https://github.com/AB498/computer-control-mcp)**（MIT）：作为跨平台本地 OCR 与防黑屏截图引擎基础，本仓库通过 `computer-control-mcp-opti.patch` 为其补充了高分屏 DPI 感知、单窗口坐标偏移还原与多屏边界裁剪优化。
+- **[ChromeDevTools/chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)**（Apache-2.0）：作为浏览器直连控制引擎，本仓库封装了跨平台自动连接启动方案与路由规则，实现直接复用日常已登录的 Chrome / Edge 会话。
+- 同时感谢 [RapidOCR](https://github.com/RapidAI/RapidOCR)、[windows-capture](https://github.com/NiiightmareXD/windows-capture)、[python-mss](https://github.com/BoboTiG/python-mss)、[MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) 与 [Astral uv](https://github.com/astral-sh/uv) 等底层开源生态组件。
+
+---
+
 ## 📄 开源协议
 
-本项目基于 [MIT License](./LICENSE) 开源，你可以自由地使用、修改和分享。
+本项目原创内容基于 [MIT License](./LICENSE) 开源，你可以自由地使用、修改和分享。

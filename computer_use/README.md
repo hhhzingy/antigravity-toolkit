@@ -161,3 +161,13 @@ Ubuntu 默认登录界面可能运行在 Wayland 模式下（Wayland 出于隔�
 如果你想深入了解底层源码补丁细节、调整控件树节点数量上限、修改 RapidOCR 识别置信度阈值，或者查阅 2K/4K 高分屏 DPI 坐标换算公式，欢迎阅读进阶开发文档：
 
 👉 **[阅读《桌面 GUI 双引擎 MCP 源码导读与二次开发指南 (`README_DEV.md`)》](./README_DEV.md)**
+
+---
+
+## 致谢与上游开源项目说明
+
+本模块基于以下开源项目进行集成、增量补丁优化与跨平台扩展（安装脚本会在本地按需拉取上游仓库并应用 `.patch` 补丁，各上游项目遵循其原有开源协议）：
+
+- **[CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP)**（MIT）：Windows 原生桌面控制基础，`linux-gui-mcp` 亦对齐并借鉴了其工具协议与鼠标晃动接管设计；
+- **[AB498/computer-control-mcp](https://github.com/AB498/computer-control-mcp)**（MIT）：跨平台本地 RapidOCR 与防黑屏截图基础；
+- **[ChromeDevTools/chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)**（Apache-2.0）：Chrome / Edge CDP 浏览器直连控制引擎。
