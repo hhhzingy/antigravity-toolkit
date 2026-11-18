@@ -5,14 +5,22 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $TargetDir = Join-Path $env:USERPROFILE "mcp-gui-workspace\antigravity-close-guard"
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 
-# Gracefully close any already-running Close Guard instance so hidden windows restore cleanly before upgrade
+# Gracefully close any already-running Close Guard instance on WinSta0\Default so hidden windows restore cleanly before upgrade
 try {
     Add-Type -Namespace CloseGuardInstaller -Name Win32 -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern System.IntPtr OpenDesktopW(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool SetThreadDesktop(System.IntPtr hDesktop);
 [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
 public static extern System.IntPtr FindWindowW(string lpClassName, string lpWindowName);
 [System.Runtime.InteropServices.DllImport("user32.dll")]
 public static extern bool PostMessageW(System.IntPtr hWnd, uint Msg, System.IntPtr wParam, System.IntPtr lParam);
 '@ -ErrorAction SilentlyContinue
+    $hDesk = [CloseGuardInstaller.Win32]::OpenDesktopW("Default", 0, $false, 0x01FF)
+    if ($hDesk -ne [System.IntPtr]::Zero) {
+        [void][CloseGuardInstaller.Win32]::SetThreadDesktop($hDesk)
+    }
     $ExistingHwnd = [CloseGuardInstaller.Win32]::FindWindowW("AntigravityCloseGuardHiddenWnd", $null)
     if ($ExistingHwnd -ne [System.IntPtr]::Zero) {
         [void][CloseGuardInstaller.Win32]::PostMessageW($ExistingHwnd, 0x0010, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
@@ -21,7 +29,7 @@ public static extern bool PostMessageW(System.IntPtr hWnd, uint Msg, System.IntP
 } catch {}
 
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.CommandLine -like "*antigravity_close_guard.pyw*"
+    $_.Name -match '^pythonw?\.exe$' -and $_.CommandLine -like "*antigravity_close_guard.pyw*"
 } | ForEach-Object {
     Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
 }
@@ -99,7 +107,7 @@ try {
     Register-ScheduledTask -TaskName "AntigravityCloseGuard" -Action $Action -Trigger $Trigger -Settings $Settings -Force -ErrorAction Stop | Out-Null
     Start-ScheduledTask -TaskName "AntigravityCloseGuard" -ErrorAction Stop
     Start-Sleep -Milliseconds 900
-    $RunningProc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*antigravity_close_guard.pyw*" }
+    $RunningProc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^pythonw?\.exe$' -and $_.CommandLine -like "*antigravity_close_guard.pyw*" }
     if ($RunningProc) {
         $LaunchedViaTask = $true
     }

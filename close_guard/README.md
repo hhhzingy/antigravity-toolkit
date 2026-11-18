@@ -79,9 +79,9 @@ bash ./close_guard/uninstall_close_guard.sh
   - **Windows**：**左键单击**右下角托盘里的 Antigravity 图标（或右键菜单点击 `显示 Antigravity 窗口`）。
   - **Ubuntu / Linux**：点击屏幕顶栏右上角的 Antigravity 托盘图标并选择 **`显示 Antigravity 窗口`**（也可以在图标上**按下鼠标中键**一键直达恢复）。
 - **快速给对话开分支（联动彩蛋）**：
-  如果你同时安装了[对话分支工具 (`branch_conversation`)](../branch_conversation/README.md)，右键点击托盘图标并选择 **`分支克隆对话 (Branch)...`**，就能随时呼出可视化界面，从任意一轮历史聊天分叉出新对话！
+  如果你同时安装了[对话分支工具 (`branch_conversation`)](../branch_conversation/README.md)，右键点击托盘图标唤起现代圆角悬浮菜单卡片，选择 **`对话分支克隆...`**（Linux 下为 `分支克隆对话 (Branch)...`），就能随时呼出 Studio 风格可视化界面，从任意一轮历史聊天分叉出新对话！
 - **彻底退出 Antigravity**：
-  右键点击系统托盘图标，选择最下方的 **`Quit`**，即可干净退出所有 Antigravity 窗口与后台进程。下次重新打开 Antigravity 时，托盘守护会自动再次就位。
+  右键点击系统托盘图标，选择最下方的 **`彻底退出 Antigravity (Quit)`**，即可干净退出所有 Antigravity 窗口与后台进程。下次重新打开 Antigravity 时，托盘守护会自动再次就位。
 
 ---
 

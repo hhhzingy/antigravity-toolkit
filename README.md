@@ -36,8 +36,8 @@
 | 模块 | 解决痛点 | 核心体验 | 详细说明 |
 | :--- | :--- | :--- | :--- |
 | **⚡ 桌面与浏览器极速控制**<br>`computer_use` | 新开空白浏览器丢登录、看屏慢、特殊窗口点不准、抢鼠标控制权 | 直连日常已登录 Chrome/Edge；`~0.1s` 极速看屏 + 微信/游戏本地 OCR；**晃动鼠标瞬间接管**（停手 2 秒自动恢复） | [查看详情](./computer_use/README.md) |
-| **🛡️ 防误关系统托盘守护**<br>`close_guard` | 误点右上角 `✕` 或按 `Alt+F4` 直接杀掉后台运行中的 AI 任务 | 点关闭键自动收进系统托盘，后台对话与终端任务 **100% 不断连**；空闲 `0.0%` CPU，仅点托盘 `Quit` 才真正退出 | [查看详情](./close_guard/README.md) |
-| **🌿 历史对话任意轮次分支**<br>`branch_conversation` | 长对话想从中间某轮换方向探索，却无法保留前文存档 | 按项目分组的可视化“对话时光机”，任选历史轮次 `~0.5s` 免重启直达新分支；也支持在对话框一句话让 AI 帮你分叉 | [查看详情](./branch_conversation/README.md) |
+| **🛡️ 防误关系统托盘守护**<br>`close_guard` | 误点右上角 `✕` 或按 `Alt+F4` 直接杀掉后台运行中的 AI 任务 | 点关闭键自动收进系统托盘，后台对话与终端任务 **100% 不断连**；配备现代圆角托盘悬浮菜单，空闲 `0.0%` CPU，仅点 `彻底退出 (Quit)` 才真正关闭 | [查看详情](./close_guard/README.md) |
+| **🌿 历史对话任意轮次分支**<br>`branch_conversation` | 长对话想从中间某轮换方向探索，却无法保留前文存档 | 现代 Studio 风格可视化“对话时光机”（支持实时搜索、按项目分组、选中轮次完整消息预览），任选历史轮次 `~0.5s` 免重启直达新分支；也支持在对话框一句话让 AI 分叉 | [查看详情](./branch_conversation/README.md) |
 
 > 💬 **想了解底层原理或进阶配置？** 直接问你的 Agent，或点进表格右侧的模块目录查看详情。
 
@@ -91,11 +91,11 @@ python scripts/doctor.py   # Ubuntu/Linux 若无 python 别名请运行 python3 
 
 ### 🛡️ 防误关系统托盘守护（`close_guard` · [模块文档](./close_guard/README.md)）
 - **无感守护**：安装后自动后台运行并设为登录自启；点 `✕` 或按 `Alt+F4`（Linux 含 `Ctrl+Q`）自动隐藏到托盘，后台任务照常运行。
-- **唤回与退出**：Windows 左键单击托盘图标唤回窗口（Linux 点击顶栏图标选 `显示 Antigravity 窗口` 或按鼠标中键）；右键托盘选 **`Quit`** 才会彻底退出。
+- **唤回与退出**：Windows 左键单击托盘图标唤回窗口（Linux 点击顶栏图标选 `显示 Antigravity 窗口` 或按鼠标中键）；右键托盘唤起现代悬浮卡片，点 **`彻底退出 Antigravity (Quit)`** 才会真正关闭。
 - **一键卸载**：Windows 运行 `powershell -ExecutionPolicy Bypass -File .\close_guard\uninstall_close_guard.ps1`；Linux 运行 `bash ./close_guard/uninstall_close_guard.sh`。
 
 ### 🌿 历史对话任意轮次分支（`branch_conversation` · [模块文档](./branch_conversation/README.md)）
-- **随手分叉**：右键系统托盘图标点 **`分支克隆对话 (Branch)...`** 选轮次一键跳进新对话；或直接在聊天框对 Agent 说 *“把当前对话克隆到第 5 轮”*；也可运行 `~/mcp-gui-workspace/antigravity-branch/branch_conversation.py --gui`。
+- **随手分叉**：右键系统托盘图标点 **`对话分支克隆...`** 打开现代 Studio 可视化窗口（支持搜索对话、查看完整轮次内容并一键跳进新对话）；或直接在聊天框对 Agent 说 *“把当前对话克隆到第 5 轮”*；也可运行 `~/mcp-gui-workspace/antigravity-branch/branch_conversation.py --gui`。
 - **一键卸载**：Windows 运行 `powershell -ExecutionPolicy Bypass -File .\branch_conversation\uninstall_branch_tool.ps1`；Linux 运行 `bash ./branch_conversation/uninstall_branch_tool.sh`。
 
 ---
