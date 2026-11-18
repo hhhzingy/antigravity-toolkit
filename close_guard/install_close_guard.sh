@@ -5,13 +5,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="${HOME}/mcp-gui-workspace/antigravity-close-guard"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 AUTOSTART_DIR="${HOME}/.config/autostart"
+LOCAL_BIN="${HOME}/.local/bin"
 SERVICE_NAME="antigravity-close-guard.service"
+
+mkdir -p "${LOCAL_BIN}"
+cp -f "${SCRIPT_DIR}/agy_guard_cli.sh" "${LOCAL_BIN}/agy-guard"
+chmod +x "${LOCAL_BIN}/agy-guard"
+
+if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  echo "[Auto-Detect] Headless Linux / SSH terminal detected — installed '${LOCAL_BIN}/agy-guard' (tmux session wrapper for agy CLI)."
+  echo " - Usage: Run 'agy-guard' instead of 'agy' so SSH disconnects or terminal closures never interrupt running tasks."
+  exit 0
+fi
+
 PYTHON_BIN="/usr/bin/python3"
 if [ ! -x "$PYTHON_BIN" ]; then
   PYTHON_BIN="$(command -v python3)"
 fi
 
-echo "=== [1/4] Checking & installing system dependencies (Ubuntu / Debian X11) ==="
+echo "=== [1/4] Checking & installing system dependencies (Linux X11) ==="
 if command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
   MISSING_PKGS=()
   for pkg in python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 gir1.2-notify-0.7 python3-xlib; do
@@ -32,7 +44,7 @@ mkdir -p "$TARGET_DIR" "$SYSTEMD_USER_DIR" "$AUTOSTART_DIR"
 SRC_SCRIPT="${SCRIPT_DIR}/antigravity_close_guard_linux.py"
 DST_SCRIPT="${TARGET_DIR}/antigravity_close_guard_linux.py"
 
-if [ "$(realpath "$SRC_SCRIPT")" != "$(realpath -m "$DST_SCRIPT")" ]; then
+if [ ! "$SRC_SCRIPT" -ef "$DST_SCRIPT" ]; then
   cp -f "$SRC_SCRIPT" "$DST_SCRIPT"
 fi
 chmod +x "$DST_SCRIPT"
@@ -41,7 +53,7 @@ echo "=== [3/4] Running X11 passive-grab self-test ==="
 if [ -n "${DISPLAY:-}" ]; then
   "$PYTHON_BIN" "$DST_SCRIPT" --self-test
 else
-  echo "No active X11 DISPLAY detected in current terminal; skipping live GUI self-test."
+  echo "No active X11 DISPLAY detected in current shell; skipping live GUI self-test."
 fi
 
 echo "=== [4/4] Registering & starting systemd user service ==="
@@ -61,7 +73,6 @@ RestartSec=3
 WantedBy=graphical-session.target default.target
 EOF
 
-# Also write XDG autostart desktop entry to guarantee startup across all Linux DEs
 cat > "${AUTOSTART_DIR}/antigravity-close-guard.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -82,6 +93,6 @@ if systemctl --user daemon-reload >/dev/null 2>&1; then
   fi
 fi
 
-echo "Antigravity Close Guard (Linux) installed, enabled on login, and ready!"
-echo " - Script path: ${DST_SCRIPT}"
-echo " - Tip: Click top-right X or press Alt+F4 / Ctrl+Q to hide Antigravity to the top-bar tray."
+echo "Antigravity Close Guard (Linux + agy-guard CLI) installed, enabled on login, and ready!"
+echo " - Script path : ${DST_SCRIPT}"
+echo " - CLI wrapper : ${LOCAL_BIN}/agy-guard"

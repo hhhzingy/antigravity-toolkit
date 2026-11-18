@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# Antigravity Toolkit - Ubuntu / Linux 一键交互式安装与管理向导
+# Antigravity Toolkit - macOS & Linux 一键自适配安装与管理向导
+# 自动识别操作系统 (macOS / Linux 桌面 / Headless SSH) 与已安装版本 (App 2.0 / IDE / agy CLI)
 #
 # 用法示例:
-#   ./install.sh                       启动交互式数字菜单（推荐新手使用）
-#   ./install.sh --all                 一键安装全部推荐增强模块
-#   ./install.sh --module 1            按编号安装指定模块 (如 1, 2, 3 或 1,2)
-#   ./install.sh --doctor              运行环境与安装状态健康自检
-#   ./install.sh --uninstall           卸载全部已安装增强模块
+#   ./install.sh                        启动交互式数字菜单（推荐新手使用）
+#   ./install.sh --all                  一键安装全部推荐增强模块
+#   ./install.sh --module 1             按编号安装指定模块 (如 1, 2, 3 或 1,2)
+#   ./install.sh --doctor               运行环境与安装状态健康自检
+#   ./install.sh --uninstall            卸载全部已安装增强模块
 #   ./install.sh --uninstall --module 2 单独卸载指定模块 (如 1, 2, 3)
 
 set -euo pipefail
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/bin:${PATH:-/usr/bin:/bin}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OS_UNAME="$(uname -s)"
 
 # ANSI color helpers (automatically disabled when stdout is not a terminal or NO_COLOR is set)
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -32,9 +35,36 @@ else
   C_DIM=""
 fi
 
+detect_env_banner() {
+  local os_tag="Linux"
+  if [[ "${OS_UNAME}" == "Darwin" ]]; then
+    os_tag="macOS ($(uname -m))"
+  elif [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+    os_tag="Linux Headless / SSH ($(uname -m))"
+  else
+    os_tag="Linux Desktop ($(uname -m))"
+  fi
+
+  local surfaces=()
+  if [[ -d "/Applications/Antigravity.app" || -d "${HOME}/Applications/Antigravity.app" || -x "/opt/Antigravity/antigravity" || -f "${HOME}/.gemini/antigravity/conversation_summaries.db" ]]; then
+    surfaces+=("App 2.0")
+  fi
+  if [[ -d "/Applications/Antigravity IDE.app" || -d "${HOME}/Applications/Antigravity IDE.app" || -x "/usr/bin/antigravity-ide" || -d "${HOME}/.config/Antigravity IDE" ]]; then
+    surfaces+=("Antigravity IDE")
+  fi
+  if command -v agy >/dev/null 2>&1 || [[ -d "${HOME}/.gemini/antigravity-cli" ]]; then
+    surfaces+=("agy CLI")
+  fi
+  local surf_str="自动预置"
+  if [[ "${#surfaces[@]}" -gt 0 ]]; then
+    surf_str="$(IFS=' / '; echo "${surfaces[*]}")"
+  fi
+  echo "${os_tag}  |  已识别版本: ${surf_str}"
+}
+
 show_usage() {
   echo ""
-  echo -e "${C_BOLD}${C_CYAN}Antigravity Toolkit (Ubuntu / Linux) 使用说明${C_RESET}"
+  echo -e "${C_BOLD}${C_CYAN}Antigravity Toolkit (macOS & Linux) 使用说明${C_RESET}"
   echo -e "${C_DIM}------------------------------------------------------------${C_RESET}"
   echo "  ./install.sh                        启动可视化数字菜单（默认推荐）"
   echo "  ./install.sh --all                  一键安装全部推荐增强模块"
@@ -94,13 +124,21 @@ install_module() {
 
   case "${mod_id}" in
     1|computer_use|computer-use)
-      run_shell_script "computer_use/setup_linux.sh" "[模块 1] 桌面与浏览器极速操控 (Computer Use + Chrome 直连)"
+      if [[ "${OS_UNAME}" == "Darwin" ]]; then
+        run_shell_script "computer_use/setup_macos.sh" "[模块 1] 桌面与浏览器极速操控 (macOS + Chrome/Edge 直连)"
+      else
+        run_shell_script "computer_use/setup_linux.sh" "[模块 1] 桌面与浏览器极速操控 (Linux / Headless CLI)"
+      fi
       ;;
     2|close_guard|close-guard)
-      run_shell_script "close_guard/install_close_guard.sh" "[模块 2] 防误关系统托盘驻留守护 (Close Guard)"
+      if [[ "${OS_UNAME}" == "Darwin" ]]; then
+        run_shell_script "close_guard/install_close_guard_macos.sh" "[模块 2] 防误退后台守护 (macOS Cmd+Q 拦截 + agy-guard)"
+      else
+        run_shell_script "close_guard/install_close_guard.sh" "[模块 2] 防误关托盘与终端守护 (Linux + agy-guard)"
+      fi
       ;;
     3|branch_conversation|branch-conversation|branch)
-      run_shell_script "branch_conversation/install_branch_tool.sh" "[模块 3] 历史对话任意轮次分支工具 (Branch Conversation)"
+      run_shell_script "branch_conversation/install_branch_tool.sh" "[模块 3] 历史对话任意轮次分支工具 (App + IDE + agy CLI)"
       ;;
     *)
       echo -e "${C_RED}[错误] 未知的模块标识: '${1}'。可选值为 1、2、3。${C_RESET}"
@@ -118,7 +156,11 @@ uninstall_module() {
       run_shell_script "computer_use/uninstall_computer_use.sh" "卸载 [模块 1] 桌面与浏览器极速操控 (Computer Use)"
       ;;
     2|close_guard|close-guard)
-      run_shell_script "close_guard/uninstall_close_guard.sh" "卸载 [模块 2] 防误关系统托盘驻留守护 (Close Guard)"
+      if [[ "${OS_UNAME}" == "Darwin" ]]; then
+        run_shell_script "close_guard/uninstall_close_guard_macos.sh" "卸载 [模块 2] 防误退后台守护 (macOS Close Guard)"
+      else
+        run_shell_script "close_guard/uninstall_close_guard.sh" "卸载 [模块 2] 防误关系统托盘守护 (Close Guard)"
+      fi
       ;;
     3|branch_conversation|branch-conversation|branch)
       run_shell_script "branch_conversation/uninstall_branch_tool.sh" "卸载 [模块 3] 历史对话任意轮次分支工具 (Branch Conversation)"
@@ -135,7 +177,8 @@ uninstall_module() {
 
 install_all() {
   echo ""
-  echo -e "${C_CYAN}即将依次为您安装全部 Antigravity 推荐增强模块...${C_RESET}"
+  echo -e "${C_CYAN}环境识别: $(detect_env_banner)${C_RESET}"
+  echo -e "${C_CYAN}即将自动适配并安装全部推荐增强模块...${C_RESET}"
   local ok=0
   install_module "1" || ok=1
   install_module "2" || ok=1
@@ -144,10 +187,10 @@ install_all() {
   echo ""
   echo -e "${C_CYAN}============================================================${C_RESET}"
   if [[ "${ok}" -eq 0 ]]; then
-    echo -e "${C_GREEN}全部推荐优化已安装完成！${C_RESET}"
+    echo -e "${C_GREEN}全部推荐优化已自动适配安装完成！${C_RESET}"
     echo "温馨提示："
-    echo "  1. 打开 Chrome 访问 chrome://inspect/#remote-debugging（Edge 访问 edge://inspect/#remote-debugging）并勾选 Enable remote debugging"
-    echo "  2. 在 Antigravity 的 MCP Servers 面板点击 Refresh 即可开始使用"
+    echo "  1. 桌面浏览器直连：在 Chrome 访问 chrome://inspect/#remote-debugging（Edge 访问 edge://inspect/#remote-debugging）勾选 Enable remote debugging"
+    echo "  2. 在 Antigravity 的 MCP Servers 点击 Refresh（或在 agy CLI 中输入 /mcp）即可使用"
   else
     echo -e "${C_YELLOW}部分模块未完全成功，请查看上方提示或运行 ./install.sh --doctor 进行环境自检。${C_RESET}"
   fi
@@ -176,8 +219,11 @@ run_doctor() {
   if ! py_bin="$(find_python)"; then
     echo ""
     echo -e "${C_YELLOW}[提示] 当前系统尚未安装 Python 3，无法运行详细自检脚本。${C_RESET}"
-    echo -e "请先在终端执行以下命令安装 Python 3："
-    echo -e "  ${C_CYAN}sudo apt-get update && sudo apt-get install -y python3 python3-tk${C_RESET}"
+    if [[ "${OS_UNAME}" == "Darwin" ]]; then
+      echo -e "请先运行: ${C_CYAN}brew install python@3.12 python-tk@3.12${C_RESET}"
+    else
+      echo -e "请先运行: ${C_CYAN}sudo apt-get update && sudo apt-get install -y python3 python3-tk${C_RESET}"
+    fi
     return 1
   fi
 
@@ -189,7 +235,7 @@ uninstall_menu() {
   echo -e "${C_DIM}----------------------------------------------------------------${C_RESET}"
   echo -e "  ${C_YELLOW}请选择要卸载的模块：${C_RESET}"
   echo "  [1] 卸载模块 1: 桌面与浏览器极速操控 (Computer Use)"
-  echo "  [2] 卸载模块 2: 防误关系统托盘驻留守护 (Close Guard)"
+  echo "  [2] 卸载模块 2: 防误关后台驻留守护 (Close Guard / agy-guard)"
   echo "  [3] 卸载模块 3: 历史对话任意轮次分支工具 (Branch Conversation)"
   echo "  [A] 卸载全部增强模块"
   echo "  [B] 返回主菜单"
@@ -215,16 +261,17 @@ interactive_menu() {
   while true; do
     echo ""
     echo -e "${C_BOLD}${C_CYAN}================================================================${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}      Antigravity Toolkit - 一键优化与安装向导 (Ubuntu/Linux)${C_RESET}"
+    echo -e "${C_BOLD}${C_CYAN}     Antigravity Toolkit - 一键自适配安装向导 (macOS & Linux)${C_RESET}"
     echo -e "${C_BOLD}${C_CYAN}================================================================${C_RESET}"
+    echo -e "  ${C_DIM}$(detect_env_banner)${C_RESET}"
     echo "  请选择要执行的操作（输入方括号内的编号或字母后按回车）："
     echo ""
     echo -e "  ${C_GREEN}[1] 桌面与浏览器极速操控 (Computer Use + Chrome 直连)${C_RESET}"
-    echo -e "      ${C_DIM}直连日常已登录浏览器、极速看屏、本地 OCR 兜底与晃动鼠标快速接管${C_RESET}"
-    echo -e "  ${C_GREEN}[2] 防误关系统托盘驻留守护 (Close Guard)${C_RESET}"
-    echo -e "      ${C_DIM}点击关闭按钮或按 Alt+F4 自动隐藏到系统托盘，保护后台 AI 任务${C_RESET}"
+    echo -e "      ${C_DIM}直连已登录浏览器、极速看屏、本地 OCR 与晃动鼠标接管 (兼容 App / IDE / agy CLI)${C_RESET}"
+    echo -e "  ${C_GREEN}[2] 防误关后台驻留守护 (Close Guard / agy-guard)${C_RESET}"
+    echo -e "      ${C_DIM}防误关/误退隐藏后台 + agy CLI 终端会话防断连保护${C_RESET}"
     echo -e "  ${C_GREEN}[3] 历史对话任意轮次分支工具 (Branch Conversation)${C_RESET}"
-    echo -e "      ${C_DIM}按项目分组管理对话，支持从任意历史问答节点一键分叉探索新思路${C_RESET}"
+    echo -e "      ${C_DIM}支持 App 2.0、Antigravity IDE 与 agy CLI 任意历史节点一键分叉${C_RESET}"
     echo ""
     echo -e "  ${C_CYAN}[A] 一键安装全部推荐优化${C_RESET}"
     echo -e "  ${C_YELLOW}[D] 运行环境与状态自检 (Doctor)${C_RESET}"

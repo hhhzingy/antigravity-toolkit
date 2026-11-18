@@ -33,7 +33,8 @@ if isinstance(data, dict) and isinstance(data.get("mcpServers"), dict):
 
 foreach ($CfgPath in @(
     (Join-Path $env:USERPROFILE ".gemini\config\mcp_config.json"),
-    (Join-Path $env:USERPROFILE ".gemini\antigravity\mcp_config.json")
+    (Join-Path $env:USERPROFILE ".gemini\antigravity\mcp_config.json"),
+    (Join-Path $env:USERPROFILE ".gemini\antigravity-cli\settings.json")
 )) {
     if (Test-Path $CfgPath) {
         if ($PyCmd) {

@@ -375,10 +375,17 @@ cfg_path.parent.mkdir(parents=True, exist_ok=True)
 cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 '@
 
-foreach ($TargetCfg in @(
+$CfgTargets = @(
     (Join-Path $env:USERPROFILE ".gemini\config\mcp_config.json"),
     (Join-Path $env:USERPROFILE ".gemini\antigravity\mcp_config.json")
-)) {
+)
+$AgyCliDir = Join-Path $env:USERPROFILE ".gemini\antigravity-cli"
+$AgyCliBin = Get-Command agy -ErrorAction SilentlyContinue
+if ((Test-Path $AgyCliDir) -or $AgyCliBin) {
+    $CfgTargets += (Join-Path $AgyCliDir "settings.json")
+}
+
+foreach ($TargetCfg in $CfgTargets) {
     $MergePyScript | & $PythonExe -B - $TargetCfg $PythonForward $NpmBinForward $UvForward $UserForward
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to update MCP config: $TargetCfg"

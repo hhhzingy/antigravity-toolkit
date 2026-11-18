@@ -1,0 +1,18 @@
+[project]
+name = "macos-gui-mcp"
+version = "0.2.0"
+description = "Fast macOS Aqua + CoreGraphics + System Events Computer Use MCP Server for Antigravity"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.2.0",
+    "mss>=9.0.0",
+    "pillow>=10.0.0",
+    "tomli>=2.0.1; python_version < '3.11'",
+]
+
+[project.scripts]
+macos-gui-mcp = "macos_gui_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

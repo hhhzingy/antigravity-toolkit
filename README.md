@@ -1,6 +1,6 @@
 # Antigravity Toolkit
 
-**让 Google Antigravity 更顺手、更安心的模块化实用增强工具集（支持 Windows & Ubuntu/Linux）**
+**让 Google Antigravity 更顺手、更安心的模块化实用增强工具集（全平台支持 Windows · macOS · Linux，自动适配 App 2.0 · Antigravity IDE · `agy` CLI）**
 
 简体中文 | **[English](./README_EN.md)** · [🤖 懒人模式](#-懒人模式直接让-antigravity-自己读仓库自己装推荐) · [✨ 功能模块一览](#-功能模块一览) · [🚀 手动快速上手](#-手动快速上手) · [📖 日常使用与卸载](#-日常使用与卸载) · [❓ 常见问题](#-常见问题排查-faq) · [🤝 参与贡献](./CONTRIBUTING.md)
 
@@ -21,10 +21,10 @@
 
 ## 🤖 懒人模式：直接让 Antigravity 自己读仓库、自己装（推荐）
 
-在 Agent 时代，你不需要自己背命令或逐行啃教程——**直接把下面这段话复制进 Antigravity 对话框**，让你的 Agent 自动检查系统环境、按需安装并完成自检：
+在 Agent 时代，你不需要自己背命令、也不需要告诉 AI 你用的是 Windows、macOS 还是 Linux，或是装了桌面端、IDE 还是 `agy` CLI——**直接把下面这段话复制进任意 Antigravity 对话框（含 `agy` 终端）**，内置的 [`AGENTS.md`](./AGENTS.md) 与 [`doctor.py`](./scripts/doctor.py) 会自动探测你的系统与已安装版本并完成适配：
 
 ```text
-请读取 https://github.com/hhhzingy/antigravity-toolkit ，结合我的系统环境帮我完成里面的优化安装并自检；如果有需要我选择或手动点一下开关的步骤，直接用简单的话告诉我。
+请读取 https://github.com/hhhzingy/antigravity-toolkit ，自动检测我的系统与已安装的 Antigravity 版本完成优化安装并自检；如果有需要我选择或手动点一下开关的步骤，直接用简单的话告诉我。
 ```
 
 - **选装、排障、卸载也只需一句话**：只想装某几个功能、遇到报错或日后想卸载？直接用大白话告诉你的 Agent 即可（例如：`“只帮我装防误关托盘和对话分支”` 或 `“帮我卸载 antigravity-toolkit 里的托盘守护”`）。
@@ -60,7 +60,7 @@ cd antigravity-toolkit
   ```powershell
   powershell -ExecutionPolicy Bypass -File .\install.ps1
   ```
-- **Ubuntu / Debian Linux**：
+- **macOS & Linux（含远程 SSH 终端）**：
   ```bash
   bash ./install.sh
   ```
@@ -69,7 +69,7 @@ cd antigravity-toolkit
 <summary>💡 习惯命令行参数一键直达？（点击展开）</summary>
 
 - **Windows ([install.ps1](./install.ps1))**：`powershell -ExecutionPolicy Bypass -File .\install.ps1 -All`（按需单装用 `-Module 2`，体检用 `-Doctor`，卸载用 `-Uninstall` 或 `-Uninstall -Module 2`）
-- **Linux ([install.sh](./install.sh))**：`bash ./install.sh --all`（按需单装用 `--module 2`，体检用 `--doctor`，卸载用 `--uninstall` 或 `--uninstall --module 2`）
+- **macOS & Linux ([install.sh](./install.sh))**：`bash ./install.sh --all`（按需单装用 `--module 2`，体检用 `--doctor`，卸载用 `--uninstall` 或 `--uninstall --module 2`）
 </details>
 
 **3. 运行健康自检**（检查依赖环境、浏览器直连开关与各模块状态）

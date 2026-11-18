@@ -6,6 +6,17 @@ export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="${HOME}/mcp-gui-workspace"
 
+# Auto-detect Headless SSH server (no DISPLAY / WAYLAND_DISPLAY) vs Desktop Linux
+IS_HEADLESS=0
+if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  IS_HEADLESS=1
+fi
+if [ "${1:-}" = "--gui" ]; then
+  IS_HEADLESS=0
+elif [ "${1:-}" = "--headless" ]; then
+  IS_HEADLESS=1
+fi
+
 fail_friendly() {
   local missing="$1"
   local why="$2"
@@ -20,17 +31,25 @@ fail_friendly() {
 
 echo "=== [0/5] Running Linux environment pre-flight checks ==="
 if [ "$(uname -s)" != "Linux" ]; then
-  fail_friendly "Linux OS" "setup_linux.sh is designed for Ubuntu / Debian Linux (X11)." "On Windows, please run setup_other_device.ps1 instead."
+  fail_friendly "Linux OS" "setup_linux.sh is designed for Linux." "Use setup_macos.sh on macOS or setup_other_device.ps1 on Windows."
 fi
 
-if [ "${XDG_SESSION_TYPE:-}" = "wayland" ]; then
-  echo "  [Note] Wayland session detected. Browser control works anywhere, while full desktop clicking & mouse-shake guard work best under 'Ubuntu on Xorg' (selectable via the gear icon on the login screen)."
+if [ "${IS_HEADLESS}" -eq 1 ]; then
+  echo "  [Auto-Detect] Headless Linux / SSH terminal environment detected — configuring headless browser MCP for agy CLI (skipping X11 desktop dependencies)."
+elif [ "${XDG_SESSION_TYPE:-}" = "wayland" ]; then
+  echo "  [Note] Wayland session detected. Browser control works anywhere, while full desktop clicking & mouse-shake guard work best under 'Ubuntu on Xorg'."
 fi
 
-echo "=== [1/5] Checking & installing X11 + AT-SPI2 system dependencies ==="
+echo "=== [1/5] Checking system dependencies ==="
+if [ "${IS_HEADLESS}" -eq 1 ]; then
+  REQ_PKGS=(python3 curl xz-utils git)
+else
+  REQ_PKGS=(python3 python3-gi gir1.2-atspi-2.0 python3-xlib python3-tk xdotool wmctrl xclip scrot curl xz-utils git)
+fi
+
 if command -v apt-get >/dev/null 2>&1 && command -v dpkg >/dev/null 2>&1; then
   MISSING_PKGS=()
-  for pkg in python3 python3-gi gir1.2-atspi-2.0 python3-xlib python3-tk xdotool wmctrl xclip scrot curl xz-utils git; do
+  for pkg in "${REQ_PKGS[@]}"; do
     if ! dpkg -s "$pkg" >/dev/null 2>&1; then
       MISSING_PKGS+=("$pkg")
     fi
@@ -49,74 +68,78 @@ if command -v apt-get >/dev/null 2>&1 && command -v dpkg >/dev/null 2>&1; then
     fi
   fi
 else
-  for cmd in git python3 curl xdotool wmctrl xclip; do
+  for cmd in git python3 curl; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
-      fail_friendly "$cmd" "Required for Linux desktop & browser MCP setup." "Please install '$cmd' (plus python3-gobject / at-spi2-core / python3-xlib) using your distro's package manager."
+      fail_friendly "$cmd" "Required for MCP setup." "Please install '$cmd' using your distro's package manager."
     fi
   done
 fi
 
 if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
-  fail_friendly "Python 3.10+" "Required by FastMCP, linux-gui-mcp, and computer-control-mcp." "Please install Python 3.10 or newer (e.g., Ubuntu 22.04+ includes Python 3.10+)."
+  fail_friendly "Python 3.10+" "Required by MCP servers." "Please install Python 3.10 or newer (e.g., Ubuntu 22.04+)."
 fi
 echo "  [OK] python3 : $(command -v python3)"
 echo "  [OK] git     : $(command -v git)"
 
 mkdir -p "${WORKSPACE_DIR}"
+cp -f "${SCRIPT_DIR}/chrome-devtools-launcher.py" "${WORKSPACE_DIR}/chrome-devtools-launcher.py"
+chmod +x "${WORKSPACE_DIR}/chrome-devtools-launcher.py"
 
-if ! command -v uv >/dev/null 2>&1; then
-  echo "  Installing 'uv' fast Python environment manager..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH}"
-fi
-
-if [ -x "${HOME}/.local/bin/uv" ] && [ ! -x /usr/local/bin/uv ] && command -v sudo >/dev/null 2>&1; then
-  sudo ln -sf "${HOME}/.local/bin/uv" /usr/local/bin/uv 2>/dev/null || true
-fi
-
-UV_BIN="$(command -v uv || true)"
-if [ -z "$UV_BIN" ] && [ -x "${HOME}/.local/bin/uv" ]; then
-  UV_BIN="${HOME}/.local/bin/uv"
-fi
-if [ -z "$UV_BIN" ] || [ ! -x "$UV_BIN" ]; then
-  fail_friendly "uv (Python package manager)" "Manages virtual environments for linux-gui-mcp and computer-control-mcp." "Run: curl -LsSf https://astral.sh/uv/install.sh | sh"
-fi
-UV_RESOLVED="$(readlink -f "$UV_BIN" 2>/dev/null || echo "$UV_BIN")"
-echo "  [OK] uv      : ${UV_RESOLVED}"
-
-echo "=== [2/5] Deploying & optimizing Engine 1: linux-gui-mcp (linux-uia-mcp) ==="
-LINUX_MCP_DST="${WORKSPACE_DIR}/linux-gui-mcp"
-mkdir -p "${LINUX_MCP_DST}"
-cp -rf "${SCRIPT_DIR}/linux-gui-mcp/"* "${LINUX_MCP_DST}/"
-sed -i 's/\r$//' "${LINUX_MCP_DST}/chrome-devtools-launcher.sh"
-chmod +x "${LINUX_MCP_DST}/chrome-devtools-launcher.sh"
-
-pushd "${LINUX_MCP_DST}" >/dev/null
-if [ ! -x .venv/bin/python ]; then
-  "$UV_RESOLVED" venv --clear --python /usr/bin/python3 --system-site-packages .venv
-fi
-"$UV_RESOLVED" pip install --python .venv/bin/python -e .
-popd >/dev/null
-
-mkdir -p "${HOME}/.linux-mcp"
-cp -f "${SCRIPT_DIR}/configs/linux-mcp-config.toml" "${HOME}/.linux-mcp/config.toml"
-
-echo "=== [3/5] Deploying & patching Engine 2: computer-control-mcp (linux-ocr-mcp) ==="
-OCR_MCP_DST="${WORKSPACE_DIR}/computer-control-mcp"
-if [ ! -d "${OCR_MCP_DST}/.git" ]; then
-  rm -rf "${OCR_MCP_DST}"
-  if ! git clone https://github.com/AB498/computer-control-mcp.git "${OCR_MCP_DST}"; then
-    fail_friendly "GitHub access (computer-control-mcp)" "Needed to clone the local RapidOCR engine." "Check your network connection and re-run ./setup_linux.sh"
+UV_RESOLVED=""
+if [ "${IS_HEADLESS}" -eq 0 ]; then
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "  Installing 'uv' fast Python environment manager..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH}"
   fi
+
+  if [ -x "${HOME}/.local/bin/uv" ] && [ ! -x /usr/local/bin/uv ] && command -v sudo >/dev/null 2>&1; then
+    sudo ln -sf "${HOME}/.local/bin/uv" /usr/local/bin/uv 2>/dev/null || true
+  fi
+
+  UV_BIN="$(command -v uv || echo "${HOME}/.local/bin/uv")"
+  if [ ! -x "$UV_BIN" ]; then
+    fail_friendly "uv (Python package manager)" "Manages virtual environments for linux-gui-mcp and computer-control-mcp." "Run: curl -LsSf https://astral.sh/uv/install.sh | sh"
+  fi
+  UV_RESOLVED="$(readlink -f "$UV_BIN" 2>/dev/null || echo "$UV_BIN")"
+  echo "  [OK] uv      : ${UV_RESOLVED}"
+
+  echo "=== [2/5] Deploying & optimizing Engine 1: linux-gui-mcp (linux-uia-mcp) ==="
+  LINUX_MCP_DST="${WORKSPACE_DIR}/linux-gui-mcp"
+  mkdir -p "${LINUX_MCP_DST}"
+  cp -rf "${SCRIPT_DIR}/linux-gui-mcp/"* "${LINUX_MCP_DST}/"
+  sed -i 's/\r$//' "${LINUX_MCP_DST}/chrome-devtools-launcher.sh"
+  chmod +x "${LINUX_MCP_DST}/chrome-devtools-launcher.sh"
+
+  pushd "${LINUX_MCP_DST}" >/dev/null
+  if [ ! -x .venv/bin/python ]; then
+    "$UV_RESOLVED" venv --clear --python /usr/bin/python3 --system-site-packages .venv
+  fi
+  "$UV_RESOLVED" pip install --python .venv/bin/python -e .
+  popd >/dev/null
+
+  mkdir -p "${HOME}/.linux-mcp"
+  cp -f "${SCRIPT_DIR}/configs/linux-mcp-config.toml" "${HOME}/.linux-mcp/config.toml"
+
+  echo "=== [3/5] Deploying & patching Engine 2: computer-control-mcp (linux-ocr-mcp) ==="
+  OCR_MCP_DST="${WORKSPACE_DIR}/computer-control-mcp"
+  if [ ! -d "${OCR_MCP_DST}/.git" ]; then
+    rm -rf "${OCR_MCP_DST}"
+    if ! git clone https://github.com/AB498/computer-control-mcp.git "${OCR_MCP_DST}"; then
+      fail_friendly "GitHub access (computer-control-mcp)" "Needed to clone the local RapidOCR engine." "Check your network connection and re-run ./setup_linux.sh"
+    fi
+  fi
+  pushd "${OCR_MCP_DST}" >/dev/null
+  git checkout -- .
+  git apply --ignore-space-change --ignore-whitespace "${SCRIPT_DIR}/computer-control-mcp-opti.patch"
+  if [ ! -x .venv/bin/python ]; then
+    "$UV_RESOLVED" venv --clear --python /usr/bin/python3 .venv
+  fi
+  "$UV_RESOLVED" pip install --python .venv/bin/python -e .
+  popd >/dev/null
+else
+  echo "=== [2-3/5] Headless mode: skipping X11 GUI / OCR engines ==="
 fi
-pushd "${OCR_MCP_DST}" >/dev/null
-git checkout -- .
-git apply --ignore-space-change --ignore-whitespace "${SCRIPT_DIR}/computer-control-mcp-opti.patch"
-if [ ! -x .venv/bin/python ]; then
-  "$UV_RESOLVED" venv --clear --python /usr/bin/python3 .venv
-fi
-"$UV_RESOLVED" pip install --python .venv/bin/python -e .
-popd >/dev/null
 
 echo "=== [4/5] Installing Node.js LTS & Engine 0: chrome-devtools-mcp ==="
 NEED_NODE=0
@@ -157,69 +180,67 @@ fi
 
 CHROME_MCP_BIN="$(command -v chrome-devtools-mcp || echo "/usr/local/bin/chrome-devtools-mcp")"
 NODE_BIN_DIR="$(dirname "$(command -v node)")"
-UV_BIN_DIR="$(dirname "$UV_RESOLVED")"
-GUI_PATH="${NODE_BIN_DIR}:${UV_BIN_DIR}:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+UV_BIN_DIR="${UV_RESOLVED:+$(dirname "$UV_RESOLVED")}"
+GUI_PATH="${NODE_BIN_DIR}${UV_BIN_DIR:+:${UV_BIN_DIR}}:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+PY3_BIN="$(command -v python3)"
 
-echo "=== [5/5] Writing Antigravity MCP config & global/workspace rules ==="
+echo "=== [5/5] Writing Antigravity MCP config (App + IDE + agy CLI) & rules ==="
 DISPLAY_VAL="${DISPLAY:-:0}"
 
-for TARGET_CFG in \
-  "${HOME}/.gemini/config/mcp_config.json" \
-  "${HOME}/.gemini/antigravity/mcp_config.json"; do
-  mkdir -p "$(dirname "$TARGET_CFG")"
-  python3 -B - "$TARGET_CFG" "$WORKSPACE_DIR" "$UV_RESOLVED" "$CHROME_MCP_BIN" "$GUI_PATH" "$DISPLAY_VAL" <<'PY'
-import json, sys
+python3 -B - "$WORKSPACE_DIR" "$UV_RESOLVED" "$CHROME_MCP_BIN" "$GUI_PATH" "$DISPLAY_VAL" "$IS_HEADLESS" "$PY3_BIN" <<'PY'
+import json, shutil, sys
 from pathlib import Path
 
-cfg_path = Path(sys.argv[1])
-ws_dir = sys.argv[2]
-uv_bin = sys.argv[3]
-chrome_mcp_bin = sys.argv[4]
-gui_path = sys.argv[5]
-disp = sys.argv[6]
+ws_dir, uv_bin, chrome_mcp_bin, gui_path, disp, is_headless_s, py3_bin = sys.argv[1:8]
+is_headless = is_headless_s == "1"
+home = Path.home()
 
-data = {}
-if cfg_path.exists() and cfg_path.stat().st_size > 0:
-    try:
-        data = json.loads(cfg_path.read_text(encoding="utf-8"))
-    except Exception:
-        data = {}
+targets = [
+    home / ".gemini" / "config" / "mcp_config.json",
+    home / ".gemini" / "antigravity" / "mcp_config.json",
+]
+cli_dir = home / ".gemini" / "antigravity-cli"
+if cli_dir.is_dir() or shutil.which("agy") or Path("/usr/local/bin/agy").is_file() or (home / ".local/bin/agy").is_file():
+    targets.append(cli_dir / "settings.json")
 
-if not isinstance(data, dict):
+for cfg_path in targets:
     data = {}
-servers = data.setdefault("mcpServers", {})
-servers["chrome-devtools"] = {
-    "command": f"{ws_dir}/linux-gui-mcp/chrome-devtools-launcher.sh",
-    "args": [],
-    "env": {
-        "CHROME_DEVTOOLS_MCP_BIN": chrome_mcp_bin,
-        "PATH": gui_path,
-    },
-}
-servers["linux-uia-mcp"] = {
-    "command": f"{ws_dir}/linux-gui-mcp/.venv/bin/linux-gui-mcp",
-    "args": [],
-    "env": {
-        "PYTHONIOENCODING": "utf-8",
-        "DISPLAY": disp,
-        "UV_BIN": uv_bin,
-        "PATH": gui_path,
-    },
-}
-servers["linux-ocr-mcp"] = {
-    "command": f"{ws_dir}/computer-control-mcp/.venv/bin/computer-control-mcp",
-    "args": [],
-    "env": {
-        "PYTHONIOENCODING": "utf-8",
-        "DISPLAY": disp,
-        "UV_BIN": uv_bin,
-        "PATH": gui_path,
-    },
-}
-cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-print(f"  Updated: {cfg_path}")
+    if cfg_path.exists() and cfg_path.stat().st_size > 0:
+        try:
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    servers = data.setdefault("mcpServers", {})
+
+    if is_headless:
+        servers["chrome-devtools"] = {
+            "command": py3_bin,
+            "args": ["-B", f"{ws_dir}/chrome-devtools-launcher.py"],
+            "env": {"CHROME_DEVTOOLS_MCP_BIN": chrome_mcp_bin, "PATH": gui_path},
+        }
+    else:
+        servers["chrome-devtools"] = {
+            "command": f"{ws_dir}/linux-gui-mcp/chrome-devtools-launcher.sh",
+            "args": [],
+            "env": {"CHROME_DEVTOOLS_MCP_BIN": chrome_mcp_bin, "PATH": gui_path},
+        }
+        servers["linux-uia-mcp"] = {
+            "command": f"{ws_dir}/linux-gui-mcp/.venv/bin/linux-gui-mcp",
+            "args": [],
+            "env": {"PYTHONIOENCODING": "utf-8", "DISPLAY": disp, "UV_BIN": uv_bin, "PATH": gui_path},
+        }
+        servers["linux-ocr-mcp"] = {
+            "command": f"{ws_dir}/computer-control-mcp/.venv/bin/computer-control-mcp",
+            "args": [],
+            "env": {"PYTHONIOENCODING": "utf-8", "DISPLAY": disp, "UV_BIN": uv_bin, "PATH": gui_path},
+        }
+
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"  Updated: {cfg_path}")
 PY
-done
 
 mkdir -p "${HOME}/.gemini/config/rules" "${WORKSPACE_DIR}/.agents/rules"
 if [ ! -f "${HOME}/.gemini/config/GEMINI.md" ]; then
@@ -231,6 +252,10 @@ cp -f "${SCRIPT_DIR}/configs/rules_linux.md" "${WORKSPACE_DIR}/.agents/rules/gui
 cp -f "${SCRIPT_DIR}/README_DEV.md" "${WORKSPACE_DIR}/README_DEV.md"
 
 echo ""
-echo "All done! Two quick steps to finish:"
-echo "  1. Open Chrome (chrome://inspect/#remote-debugging) or Edge (edge://inspect/#remote-debugging) -> check 'Enable remote debugging'."
-echo "  2. In Antigravity -> '...' (Additional Options) -> MCP Servers -> click 'Refresh'."
+if [ "${IS_HEADLESS}" -eq 1 ]; then
+  echo "All done (Headless Linux CLI mode)! Run 'agy' and type '/mcp' to verify chrome-devtools."
+else
+  echo "All done! Two quick steps to finish:"
+  echo "  1. Open Chrome (chrome://inspect/#remote-debugging) or Edge (edge://inspect/#remote-debugging) -> check 'Enable remote debugging'."
+  echo "  2. In Antigravity -> MCP Servers -> click 'Refresh' (or run '/mcp' in 'agy' CLI)."
+fi

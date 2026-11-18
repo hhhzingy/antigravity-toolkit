@@ -322,6 +322,21 @@ class PAINTSTRUCT(ctypes.Structure):
     ]
 
 
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    ]
+
+
 class GdiplusStartupInput(ctypes.Structure):
     _fields_ = [
         ("GdiplusVersion", ctypes.c_uint32),
@@ -574,6 +589,12 @@ kernel32.QueryFullProcessImageNameW.argtypes = [
 kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel32.CloseHandle.restype = wintypes.BOOL
+kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+kernel32.Process32FirstW.restype = wintypes.BOOL
+kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+kernel32.Process32NextW.restype = wintypes.BOOL
 
 # shell32 prototypes
 shell32.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
@@ -709,7 +730,8 @@ class AntigravityCloseGuard:
                 buf = ctypes.create_unicode_buffer(1024)
                 size = wintypes.DWORD(1024)
                 if kernel32.QueryFullProcessImageNameW(hproc, 0, buf, ctypes.byref(size)):
-                    is_agy = buf.value.lower().endswith("\\antigravity.exe")
+                    exe_lower = buf.value.lower()
+                    is_agy = exe_lower.endswith(("\\antigravity.exe", "\\antigravity ide.exe", "\\agy-ide.exe"))
             finally:
                 kernel32.CloseHandle(hproc)
 
@@ -718,7 +740,42 @@ class AntigravityCloseGuard:
         self.pid_cache[pid] = is_agy
         return is_agy
 
-    def _is_antigravity_main_window(self, hwnd: int | None, require_large: bool = True) -> bool:
+    def _terminal_has_active_agy_cli(self, root_pid: int) -> bool:
+        """Fast (<0.5ms) Win32 process-tree check: True if terminal `root_pid` hosts `agy` CLI."""
+        if not root_pid:
+            return False
+        snap = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+        invalid = wintypes.HANDLE(-1 & PTR_MASK).value
+        if not snap or snap == invalid:
+            return False
+        try:
+            children_map: dict[int, list[tuple[int, str]]] = {}
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if kernel32.Process32FirstW(snap, ctypes.byref(entry)):
+                while True:
+                    ppid = int(entry.th32ParentProcessID)
+                    cpid = int(entry.th32ProcessID)
+                    name = entry.szExeFile.lower()
+                    children_map.setdefault(ppid, []).append((cpid, name))
+                    if not kernel32.Process32NextW(snap, ctypes.byref(entry)):
+                        break
+
+            stack = [root_pid]
+            visited: set[int] = {root_pid}
+            while stack:
+                cur = stack.pop()
+                for cpid, cname in children_map.get(cur, ()):
+                    if cname in ("agy.exe", "antigravity-cli.exe"):
+                        return True
+                    if cpid not in visited:
+                        visited.add(cpid)
+                        stack.append(cpid)
+            return False
+        finally:
+            kernel32.CloseHandle(snap)
+
+    def _is_antigravity_main_window(self, hwnd: int | None, require_large: bool = True, check_cli_terminal: bool = False) -> bool:
         if not hwnd or not user32.IsWindow(hwnd):
             return False
         if user32.GetWindow(hwnd, GW_OWNER):
@@ -729,12 +786,18 @@ class AntigravityCloseGuard:
 
         cls_buf = ctypes.create_unicode_buffer(64)
         user32.GetClassNameW(hwnd, cls_buf, 64)
-        if cls_buf.value != "Chrome_WidgetWin_1":
-            return False
+        cls_name = cls_buf.value
 
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if not self._is_antigravity_pid(pid.value):
+
+        if cls_name == "Chrome_WidgetWin_1":
+            if not self._is_antigravity_pid(pid.value):
+                return False
+        elif check_cli_terminal and cls_name in ("CASCADIA_HOSTING_WINDOW_CLASS", "ConsoleWindowClass"):
+            if not self._terminal_has_active_agy_cli(pid.value):
+                return False
+        else:
             return False
 
         if require_large and not user32.IsIconic(hwnd):
@@ -794,7 +857,7 @@ class AntigravityCloseGuard:
                     hwnd_pt = user32.WindowFromPoint(info.pt)
                     if hwnd_pt:
                         hwnd_root = user32.GetAncestor(hwnd_pt, GA_ROOT)
-                        if self._is_antigravity_main_window(hwnd_root) and self._is_point_on_close_button(
+                        if self._is_antigravity_main_window(hwnd_root, check_cli_terminal=True) and self._is_point_on_close_button(
                             hwnd_root, info.pt.x, info.pt.y
                         ):
                             self.swallow_next_lbuttonup = True
@@ -816,7 +879,7 @@ class AntigravityCloseGuard:
                 return 1
             if not self.quitting_agy and info.vkCode == VK_F4 and (info.flags & LLKHF_ALTDOWN):
                 fg = user32.GetForegroundWindow()
-                if self._is_antigravity_main_window(fg):
+                if self._is_antigravity_main_window(fg, check_cli_terminal=True):
                     if self.msg_hwnd:
                         user32.PostMessageW(self.msg_hwnd, WM_APP_HIDE_TO_TRAY, fg, 0)
                     return 1
@@ -884,17 +947,22 @@ class AntigravityCloseGuard:
         def _quit_worker() -> None:
             try:
                 pids: set[int] = set()
+                agy_hwnds_to_close: list[int] = []
                 for h in target_hwnds:
                     if user32.IsWindow(h):
                         pid = wintypes.DWORD()
                         user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
-                        if pid.value:
+                        if pid.value and self._is_antigravity_pid(pid.value):
                             pids.add(pid.value)
-                        user32.PostMessageW(h, WM_CLOSE, 0, 0)
+                            agy_hwnds_to_close.append(h)
+                            user32.PostMessageW(h, WM_CLOSE, 0, 0)
+                        else:
+                            # Restore any hidden agy CLI terminal window rather than force-killing user's terminal
+                            user32.ShowWindow(h, SW_SHOW)
 
                 deadline = time.monotonic() + 2.0
                 while time.monotonic() < deadline:
-                    still_open = [h for h in target_hwnds if user32.IsWindow(h)]
+                    still_open = [h for h in agy_hwnds_to_close if user32.IsWindow(h)]
                     if not still_open:
                         break
                     time.sleep(0.15)
@@ -925,7 +993,16 @@ class AntigravityCloseGuard:
 
     # ---- System Tray Icon Management --------------------------------------
     def _get_antigravity_exe_path(self) -> Path:
-        return Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "antigravity" / "Antigravity.exe"
+        local_ad = Path(os.environ.get("LOCALAPPDATA", ""))
+        pf = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        for cand in (
+            local_ad / "Programs" / "antigravity" / "Antigravity.exe",
+            local_ad / "Programs" / "Antigravity IDE" / "Antigravity IDE.exe",
+            pf / "Antigravity" / "Antigravity.exe",
+        ):
+            if cand.exists():
+                return cand
+        return local_ad / "Programs" / "antigravity" / "Antigravity.exe"
 
     def _load_icon(self) -> None:
         if self.hicon_small:

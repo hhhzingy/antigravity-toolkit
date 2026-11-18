@@ -37,6 +37,7 @@ import uuid
 import zlib
 
 AGY_ROOT = Path.home() / ".gemini" / "antigravity"
+AGY_CLI_ROOT = Path.home() / ".gemini" / "antigravity-cli"
 PROJECTS_DIR = Path.home() / ".gemini" / "config" / "projects"
 
 
@@ -277,44 +278,119 @@ def _extract_strings_from_pb(buf: bytes, depth: int = 0) -> list[str]:
     return found
 
 
-def list_all_conversations() -> list[dict]:
-    sum_db = AGY_ROOT / "conversation_summaries.db"
-    if not sum_db.exists():
+def _list_cli_jsonl_conversations() -> list[dict]:
+    """Discover native `agy` CLI sessions stored under `~/.gemini/antigravity-cli/brain/<uuid>`."""
+    brain_dir = AGY_CLI_ROOT / "brain"
+    if not brain_dir.is_dir():
         return []
-    pmap = load_projects_map()
-    conn = sqlite3.connect(f"file:{sum_db.as_posix()}?mode=ro", uri=True, timeout=10.0)
-    try:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()]
-        # Also pull fallback project names from conversations_fts chunk_index = -1
-        fts_proj: dict[str, str] = {}
+
+    history_titles: dict[str, tuple[str, str]] = {}
+    hist_file = AGY_CLI_ROOT / "history.jsonl"
+    if hist_file.is_file():
         try:
-            for cid, proj in conn.execute(
-                "SELECT conversation_id, project FROM conversations_fts WHERE chunk_index = -1 AND project != ''"
-            ).fetchall():
-                fts_proj[cid] = proj
+            for ln in hist_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if not ln.strip():
+                    continue
+                obj = json.loads(ln)
+                cid = str(obj.get("conversation_id") or obj.get("session_id") or obj.get("id") or "").strip()
+                if cid:
+                    t = str(obj.get("title") or obj.get("summary") or obj.get("name") or "").strip()
+                    ws = str(obj.get("workspace") or obj.get("cwd") or "").strip()
+                    history_titles[cid] = (t, Path(ws).name if ws else "")
         except Exception:
             pass
 
-        rows = conn.execute(
-            "SELECT * FROM conversation_summaries WHERE parent_conversation_id = '' AND killed = 0 ORDER BY last_modified_time DESC"
-        ).fetchall()
-        out = []
-        for r in rows:
-            d = dict(zip(cols, r))
-            cid = d["conversation_id"]
-            if not (AGY_ROOT / "conversations" / f"{cid}.db").exists():
-                continue
-            pid = (d.get("project_id") or "").strip()
-            if pid and pid != "outside-of-project":
-                d["project_name"] = pmap.get(pid) or fts_proj.get(cid) or pid[:8]
-                d["is_in_project"] = True
-            else:
-                d["project_name"] = ""
-                d["is_in_project"] = False
-            out.append(d)
-        return out
-    finally:
-        conn.close()
+    items: list[dict] = []
+    for sub in brain_dir.iterdir():
+        if not sub.is_dir() or not _UUID_RE.match(sub.name):
+            continue
+        cid = sub.name
+        if (AGY_ROOT / "conversations" / f"{cid}.db").exists():
+            continue
+        log_dir = sub / ".system_generated" / "logs"
+        t_file = log_dir / "transcript_full.jsonl"
+        if not t_file.is_file():
+            t_file = log_dir / "transcript.jsonl"
+        if not t_file.is_file():
+            continue
+
+        first_prompt = ""
+        step_cnt = 0
+        try:
+            for ln in t_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if not ln.strip():
+                    continue
+                step_cnt += 1
+                if not first_prompt and '"USER_INPUT"' in ln:
+                    obj = json.loads(ln)
+                    if obj.get("type") == "USER_INPUT":
+                        first_prompt = _clean_user_request_text(str(obj.get("content") or ""))[:60]
+        except Exception:
+            continue
+
+        if step_cnt == 0:
+            continue
+
+        h_title, h_ws = history_titles.get(cid, ("", ""))
+        disp_title = h_title or first_prompt or f"CLI Session {cid[:8]}"
+        mtime_ns = int(t_file.stat().st_mtime * 1_000_000_000)
+        proj_label = f"agy CLI · {h_ws}" if h_ws else "agy CLI 终端会话"
+        items.append(
+            {
+                "conversation_id": cid,
+                "title": f"[CLI] {disp_title}" if not disp_title.startswith("[CLI]") else disp_title,
+                "last_modified_time": mtime_ns,
+                "step_count": step_cnt,
+                "status": "CASCADE_RUN_STATUS_IDLE",
+                "project_name": proj_label,
+                "is_in_project": True,
+                "surface": "cli",
+            }
+        )
+
+    items.sort(key=lambda d: int(d.get("last_modified_time") or 0), reverse=True)
+    return items
+
+
+def list_all_conversations() -> list[dict]:
+    out: list[dict] = []
+    sum_db = AGY_ROOT / "conversation_summaries.db"
+    if sum_db.exists():
+        pmap = load_projects_map()
+        conn = sqlite3.connect(f"file:{sum_db.as_posix()}?mode=ro", uri=True, timeout=10.0)
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()]
+            fts_proj: dict[str, str] = {}
+            try:
+                for cid, proj in conn.execute(
+                    "SELECT conversation_id, project FROM conversations_fts WHERE chunk_index = -1 AND project != ''"
+                ).fetchall():
+                    fts_proj[cid] = proj
+            except Exception:
+                pass
+
+            rows = conn.execute(
+                "SELECT * FROM conversation_summaries WHERE parent_conversation_id = '' AND killed = 0 ORDER BY last_modified_time DESC"
+            ).fetchall()
+            for r in rows:
+                d = dict(zip(cols, r))
+                cid = d["conversation_id"]
+                if not (AGY_ROOT / "conversations" / f"{cid}.db").exists():
+                    continue
+                pid = (d.get("project_id") or "").strip()
+                if pid and pid != "outside-of-project":
+                    d["project_name"] = pmap.get(pid) or fts_proj.get(cid) or pid[:8]
+                    d["is_in_project"] = True
+                else:
+                    d["project_name"] = ""
+                    d["is_in_project"] = False
+                d["surface"] = "app"
+                out.append(d)
+        finally:
+            conn.close()
+
+    out.extend(_list_cli_jsonl_conversations())
+    return out
 
 
 def group_conversations_by_project(convos: list[dict]) -> list[tuple[str, bool, list[dict]]]:
@@ -345,10 +421,65 @@ def group_conversations_by_project(convos: list[dict]) -> list[tuple[str, bool, 
     return groups
 
 
+def _get_cli_jsonl_turns(cid: str) -> list[dict]:
+    log_dir = AGY_CLI_ROOT / "brain" / cid / ".system_generated" / "logs"
+    t_path = log_dir / "transcript_full.jsonl"
+    if not t_path.is_file():
+        t_path = log_dir / "transcript.jsonl"
+    if not t_path.is_file():
+        return []
+
+    steps: list[dict] = []
+    for raw_ln in t_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not raw_ln.strip():
+            continue
+        try:
+            steps.append(json.loads(raw_ln))
+        except Exception:
+            continue
+
+    if not steps:
+        return []
+
+    max_idx = max(int(s.get("step_index", idx)) for idx, s in enumerate(steps))
+    u_entries = [
+        (int(s.get("step_index", idx)), s)
+        for idx, s in enumerate(steps)
+        if s.get("type") == "USER_INPUT"
+    ]
+    turns: list[dict] = []
+    for i, (u_idx, obj) in enumerate(u_entries):
+        end_idx = (u_entries[i + 1][0] - 1) if (i + 1 < len(u_entries)) else max_idx
+        created_at = str(obj.get("created_at") or "")
+        if created_at:
+            try:
+                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00")).astimezone()
+                created_fmt = dt.strftime("%m-%d %H:%M")
+            except Exception:
+                created_fmt = created_at[:16]
+        else:
+            created_fmt = ""
+        full_text = _extract_user_request_multiline(str(obj.get("content") or ""))
+        single_line = " ".join(full_text.split()) if full_text else ""
+        turns.append(
+            {
+                "turn": i + 1,
+                "start_idx": u_idx,
+                "end_idx": end_idx,
+                "cutoff_count": end_idx + 1,
+                "completed": True,
+                "created_at": created_fmt,
+                "preview": (single_line or "(图片/空消息)")[:140],
+                "full_text": full_text or "(本轮为附件或无纯文本输入内容)",
+            }
+        )
+    return turns
+
+
 def get_conversation_turns(cid: str, status: str = "") -> list[dict]:
     conv_db = AGY_ROOT / "conversations" / f"{cid}.db"
     if not conv_db.exists():
-        return []
+        return _get_cli_jsonl_turns(cid)
 
     transcript_map: dict[int, tuple[str, str, bool]] = {}
     t_path = AGY_ROOT / "brain" / cid / ".system_generated" / "logs" / "transcript.jsonl"
@@ -464,7 +595,46 @@ def _attach_win32_default_desktop() -> None:
         pass
 
 
-def auto_open_in_antigravity(search_token: str) -> bool:
+def _is_vscode_ide_window(title: str, exe_path: str) -> bool:
+    """Distinguish Antigravity IDE (VS Code layout) from Antigravity 2.0 App window."""
+    exe_l = exe_path.lower()
+    if exe_l.endswith(("\\antigravity ide.exe", "\\agy-ide.exe")):
+        return True
+    if title.endswith(" - Antigravity IDE"):
+        return True
+    if " - " in title and title.endswith(" - Antigravity"):
+        roam = Path(os.environ.get("APPDATA", ""))
+        if (roam / "Antigravity" / "User" / "globalStorage").is_dir() or (roam / "Antigravity IDE").is_dir():
+            return True
+    return False
+
+
+def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid: str = "") -> bool:
+    if surface == "cli" and new_cid:
+        agy_bin = shutil.which("agy.exe") or shutil.which("agy.cmd") or shutil.which("agy")
+        if sys.platform == "win32" and agy_bin and shutil.which("wt.exe"):
+            try:
+                subprocess.Popen(["wt.exe", "new-tab", agy_bin, "--resume", new_cid])
+                return True
+            except Exception:
+                return False
+        return False
+
+    if sys.platform == "darwin":
+        for app_name in ("Antigravity", "Antigravity IDE"):
+            try:
+                res = subprocess.run(
+                    ["osascript", "-e", f'if application "{app_name}" is running then tell application "{app_name}" to activate'],
+                    capture_output=True,
+                    timeout=2.5,
+                    check=False,
+                )
+                if res.returncode == 0:
+                    return True
+            except Exception:
+                pass
+        return False
+
     if sys.platform != "win32":
         return False
 
@@ -504,7 +674,9 @@ def auto_open_in_antigravity(search_token: str) -> bool:
     ]
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
-    agy_hwnds: list[int] = []
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, ctypes.LPWSTR, ctypes.c_int]
+    app_hwnds: list[int] = []
+    ide_hwnds: list[int] = []
 
     def _cb(hwnd: int, _: int) -> bool:
         if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4):
@@ -521,17 +693,29 @@ def auto_open_in_antigravity(search_token: str) -> bool:
                 buf = ctypes.create_unicode_buffer(1024)
                 sz = wintypes.DWORD(1024)
                 if kernel32.QueryFullProcessImageNameW(hproc, 0, buf, ctypes.byref(sz)):
-                    if buf.value.lower().endswith("\\antigravity.exe"):
-                        agy_hwnds.append(int(hwnd))
+                    exe_str = buf.value
+                    if exe_str.lower().endswith(("\\antigravity.exe", "\\antigravity ide.exe", "\\agy-ide.exe")):
+                        tbuf = ctypes.create_unicode_buffer(512)
+                        user32.GetWindowTextW(hwnd, tbuf, 512)
+                        if _is_vscode_ide_window(tbuf.value, exe_str):
+                            ide_hwnds.append(int(hwnd))
+                        else:
+                            app_hwnds.append(int(hwnd))
             finally:
                 kernel32.CloseHandle(hproc)
         return True
 
     user32.EnumWindows(WNDENUMPROC(_cb), 0)
-    if not agy_hwnds:
+    if not app_hwnds:
+        if ide_hwnds:
+            ide_h = ide_hwnds[0]
+            if user32.IsIconic(ide_h):
+                user32.ShowWindow(ide_h, 9)
+                time.sleep(0.15)
+            user32.SetForegroundWindow(ide_h)
         return False
 
-    hwnd = agy_hwnds[0]
+    hwnd = app_hwnds[0]
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, 9)
         time.sleep(0.18)
@@ -662,6 +846,97 @@ def replace_uuid_bytes(
     return blob.replace(old_cid_b, new_cid_b).replace(old_tid_b, new_tid_b)
 
 
+def _branch_cli_jsonl_conversation(
+    src_info: dict,
+    *,
+    custom_new_title: str | None = None,
+    turn_number: int | None = None,
+    drop_last: int | None = None,
+    up_to_step: int | None = None,
+) -> dict:
+    old_cid = src_info["conversation_id"]
+    orig_title = (src_info.get("title") or f"CLI Session {old_cid[:8]}").removeprefix("[CLI] ").strip()
+    turns = _get_cli_jsonl_turns(old_cid)
+    if not turns:
+        raise RuntimeError(f"未在 agy CLI 会话 {old_cid} 中找到可克隆的对话轮次")
+
+    suffix_tag = "分支"
+    if up_to_step is not None:
+        max_step_idx = up_to_step
+        suffix_tag = f"分支 S{up_to_step}"
+    elif drop_last is not None:
+        if drop_last < 0 or drop_last >= len(turns):
+            raise ValueError(f"--drop-last {drop_last} 超出范围（共 {len(turns)} 轮）")
+        sel = turns[len(turns) - 1 - drop_last]
+        max_step_idx = sel["end_idx"]
+        if drop_last > 0:
+            suffix_tag = f"分支 1..{sel['turn']}轮"
+    elif turn_number is not None:
+        pos_idx = (len(turns) + turn_number) if turn_number < 0 else (turn_number - 1)
+        if pos_idx < 0 or pos_idx >= len(turns):
+            raise ValueError(f"--turn {turn_number} 超出范围（共 {len(turns)} 轮）")
+        sel = turns[pos_idx]
+        max_step_idx = sel["end_idx"]
+        if sel["turn"] < len(turns):
+            suffix_tag = f"分支 1..{sel['turn']}轮"
+    else:
+        max_step_idx = turns[-1]["end_idx"]
+
+    new_title = custom_new_title or f"{orig_title} [{suffix_tag}]"
+    new_cid = str(uuid.uuid4())
+    src_dir = AGY_CLI_ROOT / "brain" / old_cid
+    dst_dir = AGY_CLI_ROOT / "brain" / new_cid
+    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+
+    kept_steps = 0
+    for log_name in ("transcript.jsonl", "transcript_full.jsonl"):
+        lf = dst_dir / ".system_generated" / "logs" / log_name
+        if lf.is_file():
+            out_lines: list[str] = []
+            for idx, ln in enumerate(lf.read_text(encoding="utf-8", errors="ignore").splitlines()):
+                if not ln.strip():
+                    continue
+                try:
+                    obj = json.loads(ln)
+                    sidx = int(obj.get("step_index", idx))
+                except Exception:
+                    continue
+                if sidx <= max_step_idx:
+                    out_lines.append(ln.replace(old_cid, new_cid))
+            lf.write_text("\n".join(out_lines) + ("\n" if out_lines else ""), encoding="utf-8")
+            kept_steps = max(kept_steps, len(out_lines))
+
+    hist_file = AGY_CLI_ROOT / "history.jsonl"
+    try:
+        hist_entry = {
+            "conversation_id": new_cid,
+            "title": new_title,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "parent_conversation_id": old_cid,
+        }
+        with hist_file.open("a", encoding="utf-8") as hf:
+            hf.write(json.dumps(hist_entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+    kept_turns = len([t for t in turns if t["start_idx"] <= max_step_idx])
+    return {
+        "surface": "cli",
+        "source_cid": old_cid,
+        "source_title": orig_title,
+        "new_cid": new_cid,
+        "new_tid": new_cid,
+        "new_title": new_title,
+        "search_token": f"agycli{new_cid.replace('-', '')[:12]}",
+        "kept_turns": kept_turns,
+        "total_turns": len(turns),
+        "step_count": kept_steps,
+        "resume_command": f"agy --resume {new_cid}",
+        "link": f"[{new_title}](conversation://{new_cid})",
+        "db_path": str(dst_dir),
+    }
+
+
 def branch_conversation(
     *,
     source_cid: str | None = None,
@@ -671,8 +946,35 @@ def branch_conversation(
     drop_last: int | None = None,
     up_to_step: int | None = None,
 ) -> dict:
+    # Check if targeting a native `agy` CLI JSONL session first
+    cli_sessions = _list_cli_jsonl_conversations()
+    if source_cid and not (AGY_ROOT / "conversations" / f"{source_cid}.db").exists():
+        cli_match = next((c for c in cli_sessions if c["conversation_id"] == source_cid), None)
+        if cli_match:
+            return _branch_cli_jsonl_conversation(
+                cli_match,
+                custom_new_title=custom_new_title,
+                turn_number=turn_number,
+                drop_last=drop_last,
+                up_to_step=up_to_step,
+            )
+
     sum_db_path = AGY_ROOT / "conversation_summaries.db"
     if not sum_db_path.exists():
+        if cli_sessions:
+            cli_match = (
+                next((c for c in cli_sessions if title_query.lower() in c["title"].lower()), None)
+                if title_query
+                else cli_sessions[0]
+            )
+            if cli_match:
+                return _branch_cli_jsonl_conversation(
+                    cli_match,
+                    custom_new_title=custom_new_title,
+                    turn_number=turn_number,
+                    drop_last=drop_last,
+                    up_to_step=up_to_step,
+                )
         raise FileNotFoundError(f"未找到 Antigravity 对话索引数据库: {sum_db_path}")
 
     sum_conn = sqlite3.connect(sum_db_path, timeout=15.0)
@@ -2862,14 +3164,28 @@ def run_gui() -> None:
 
         root.withdraw()
         root.update()
-        opened = auto_open_in_antigravity(res["search_token"])
+        res_surface = res.get("surface", "app")
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(res.get("resume_command") or res["link"])
+            root.update()
+        except Exception:
+            pass
+        opened = auto_open_in_antigravity(res["search_token"], surface=res_surface, new_cid=res["new_cid"])
         if not opened:
             root.deiconify()
-            messagebox.showinfo(
-                "分支已创建",
-                f"已成功创建分支：{res['new_title']}\n\n它已实时出现在 Antigravity 左侧对话列表最上方（免重启），点击即可直接继续聊天！",
-                parent=root,
-            )
+            if res_surface == "cli":
+                messagebox.showinfo(
+                    "CLI 分支已创建",
+                    f"已成功创建 agy CLI 分支：{res['new_title']}\n\n恢复命令已复制到剪贴板，在终端执行即可进入：\n{res.get('resume_command')}",
+                    parent=root,
+                )
+            else:
+                messagebox.showinfo(
+                    "分支已创建",
+                    f"已成功创建分支：{res['new_title']}\n\n它已实时出现在 Antigravity 会话列表最上方（跳转链接也已复制到剪贴板），点击即可直接继续聊天！",
+                    parent=root,
+                )
         root.destroy()
 
     do_branch_ref.append(do_branch_and_open)
@@ -3018,11 +3334,26 @@ def main() -> None:
         return
 
     if args.list_turns:
-        sum_conn = sqlite3.connect(f"file:{(AGY_ROOT / 'conversation_summaries.db').as_posix()}?mode=ro", uri=True)
-        try:
-            src = resolve_source_conversation(sum_conn, args.source_cid, args.title_query)
-        finally:
-            sum_conn.close()
+        src = None
+        sum_db_file = AGY_ROOT / "conversation_summaries.db"
+        if sum_db_file.is_file() and (not args.source_cid or (AGY_ROOT / "conversations" / f"{args.source_cid}.db").is_file()):
+            sum_conn = sqlite3.connect(f"file:{sum_db_file.as_posix()}?mode=ro", uri=True)
+            try:
+                src = resolve_source_conversation(sum_conn, args.source_cid, args.title_query)
+            except Exception:
+                src = None
+            finally:
+                sum_conn.close()
+        if src is None:
+            cli_list = _list_cli_jsonl_conversations()
+            if args.source_cid:
+                src = next((c for c in cli_list if c["conversation_id"] == args.source_cid), None)
+            elif args.title_query:
+                src = next((c for c in cli_list if args.title_query.lower() in c["title"].lower()), None)
+            elif cli_list:
+                src = cli_list[0]
+        if src is None:
+            raise RuntimeError("未找到匹配的源对话 (已检查桌面端 / IDE 与 agy CLI)")
         turns = get_conversation_turns(src["conversation_id"], src.get("status", ""))
         print(f"Conversation: {src['title']} ({src['conversation_id']})")
         for t in turns:
@@ -3039,7 +3370,7 @@ def main() -> None:
         up_to_step=args.up_to_step,
     )
     if args.open:
-        auto_open_in_antigravity(res["search_token"])
+        auto_open_in_antigravity(res["search_token"], surface=res.get("surface", "app"), new_cid=res["new_cid"])
     print("=== Conversation Branched Successfully! ===")
     for k, v in res.items():
         print(f"  {k}: {v}")

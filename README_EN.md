@@ -1,6 +1,6 @@
 # Antigravity Toolkit
 
-**Agent-ready modular enhancements that make Google Antigravity faster, safer, and easier to use (Windows & Ubuntu/Linux)**
+**Agent-ready modular enhancements for Google Antigravity across Windows, macOS & Linux — automatically adapting to Antigravity 2.0 App, Antigravity IDE, and `agy` CLI**
 
 **[简体中文](./README.md)** | English · [🤖 Agent-Native Install](#-agent-native-mode-let-antigravity-install-it-for-you-recommended) · [✨ Modules](#-modular-enhancements-overview) · [🚀 Manual Quick Start](#-manual-quick-start) · [📖 Usage & Uninstall](#-daily-usage--clean-uninstall) · [❓ FAQ](#-faq--troubleshooting) · [🤝 Contributing](./CONTRIBUTING.md)
 
@@ -21,10 +21,10 @@ If you use Google Antigravity every day, you have probably run into these workfl
 
 ## 🤖 Agent-Native Mode: Let Antigravity Install It for You (Recommended)
 
-In the Agent era, you don't need to memorize terminal commands or read through setup docs yourself—**just paste this prompt into your Antigravity chat** and let your Agent inspect your environment, install the optimizations, and verify everything:
+In the Agent era, you never need to memorize commands or tell your AI what OS (`Windows`/`macOS`/`Linux`) or Antigravity edition (`App 2.0`/`IDE`/`agy` CLI) you use—**just paste this prompt into any Antigravity chat or `agy` terminal**, and built-in [`AGENTS.md`](./AGENTS.md) + [`doctor.py`](./scripts/doctor.py) will auto-detect and configure everything:
 
 ```text
-Please read https://github.com/hhhzingy/antigravity-toolkit , check my system environment, install the optimizations for me, and run the health check. If any step needs my choice or a quick manual toggle, just tell me in plain English.
+Please read https://github.com/hhhzingy/antigravity-toolkit , auto-detect my OS and installed Antigravity editions, install the optimizations, and run the health check. If any step needs a quick manual toggle, tell me in plain English.
 ```
 
 - **Pick modules, troubleshoot, or uninstall in plain English**: Want only specific features, hit an error, or want to remove something later? Just tell your Agent (e.g., *"Only install the close-to-tray guard and conversation branching"* or *"Uninstall the close guard from antigravity-toolkit"*).
@@ -60,7 +60,7 @@ cd antigravity-toolkit
   ```powershell
   powershell -ExecutionPolicy Bypass -File .\install.ps1
   ```
-- **Ubuntu / Debian Linux**:
+- **macOS & Linux (Desktop or Headless SSH)**:
   ```bash
   bash ./install.sh
   ```
@@ -68,8 +68,8 @@ cd antigravity-toolkit
 <details>
 <summary>💡 Prefer non-interactive CLI flags? (Click to expand)</summary>
 
-- **Windows ([install.ps1](./install.ps1))**: `powershell -ExecutionPolicy Bypass -File .\install.ps1 -All` (or `-Module 2`, `-Doctor`, `-Uninstall`)
-- **Linux ([install.sh](./install.sh))**: `bash ./install.sh --all` (or `--module 2`, `--doctor`, `--uninstall`)
+- **Windows ([install.ps1](./install.ps1))**: `powershell -ExecutionPolicy Bypass -File .\install.ps1 -All` (or `-Module 2`, `-Doctor`, `-Uninstall`, `-Uninstall -Module 2`)
+- **macOS & Linux ([install.sh](./install.sh))**: `bash ./install.sh --all` (or `--module 2`, `--doctor`, `--uninstall`, `--uninstall --module 2`)
 </details>
 
 **3. Run the health check anytime** (verifies prerequisites, browser toggle, and installed modules)

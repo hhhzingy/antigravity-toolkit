@@ -1,0 +1,7 @@
+[control]
+# Shake the mouse >= mouse_takeover_units while AI is operating to pause AI immediately;
+# AI resumes automatically after idle_timeout_seconds (default 2s) of mouse stillness.
+enabled = true
+consent_countdown_seconds = 0
+idle_timeout_seconds = 2
+mouse_takeover_units = 500

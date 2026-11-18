@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Smart Windows Launcher for chrome-devtools-mcp (Chrome + Microsoft Edge Auto-Detect)
-------------------------------------------------------------------------------------
-Automatically inspects `DevToolsActivePort` for both Google Chrome and Microsoft Edge:
-- If Edge has remote debugging enabled (`edge://inspect/#remote-debugging`) and is
-  listening locally, connects via `--wsEndpoint ws://127.0.0.1:<port><ws_path>`.
-- If Chrome has remote debugging enabled (`chrome://inspect/#remote-debugging`) and is
-  listening locally, connects via `--autoConnect` (or `--wsEndpoint` fallback).
-- Otherwise falls back cleanly to `--autoConnect` so standard behavior is preserved.
-- Binds the spawned child process tree (`cmd.exe` -> `node.exe`) to a Windows Job
-  Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, ensuring zero orphan `node.exe`
-  processes when MCP servers are refreshed or terminated.
+Smart Cross-Platform Launcher for chrome-devtools-mcp (Win / macOS / Linux / Headless)
+--------------------------------------------------------------------------------------
+Automatically inspects `DevToolsActivePort` across Chrome, Microsoft Edge, Brave, Arc,
+and Chromium on Windows, macOS, and Linux:
+- Picks whichever active listening browser updated `DevToolsActivePort` most recently:
+  * Chrome -> `--autoConnect`
+  * Edge / Brave / Arc / Chromium -> `--wsEndpoint ws://127.0.0.1:<port><ws_path>`
+- On Headless Linux (e.g., `agy` CLI over SSH without `$DISPLAY` or `$WAYLAND_DISPLAY`)
+  when no remote-debugging port is open, automatically appends `--headless` so browser
+  automation works cleanly on servers without X11.
+- On Windows, binds the child process tree (`cmd.exe` -> `node.exe`) to a Job Object
+  with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so zero orphan `node.exe` remain on exit.
+- On macOS / Linux, uses `os.execvp` to replace the wrapper process cleanly.
 """
 
 from __future__ import annotations
@@ -107,7 +109,7 @@ def _is_port_listening(port: int) -> bool:
         return False
 
 
-def _read_active_port(port_file: Path) -> tuple[int, str] | None:
+def _read_active_port(port_file: Path) -> tuple[int, str, float] | None:
     if not port_file.is_file():
         return None
     try:
@@ -119,7 +121,7 @@ def _read_active_port(port_file: Path) -> tuple[int, str] | None:
         if not ws_path.startswith("/"):
             ws_path = "/" + ws_path
         if 1 <= port <= 65535 and _is_port_listening(port):
-            return port, ws_path
+            return port, ws_path, port_file.stat().st_mtime
     except Exception:
         pass
     return None
@@ -129,41 +131,89 @@ def _resolve_chrome_mcp_bin() -> str:
     env_bin = os.environ.get("CHROME_DEVTOOLS_MCP_BIN", "").strip()
     if env_bin and Path(env_bin).is_file():
         return env_bin
-    for name in ("chrome-devtools-mcp.cmd", "chrome-devtools-mcp"):
+    names = ("chrome-devtools-mcp.cmd", "chrome-devtools-mcp") if sys.platform == "win32" else ("chrome-devtools-mcp",)
+    for name in names:
         found = shutil.which(name)
         if found:
             return found
-    appdata = os.environ.get("APPDATA", "")
-    if appdata:
-        fallback = Path(appdata) / "npm" / "chrome-devtools-mcp.cmd"
-        if fallback.is_file():
-            return str(fallback)
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            fallback = Path(appdata) / "npm" / "chrome-devtools-mcp.cmd"
+            if fallback.is_file():
+                return str(fallback)
+    elif sys.platform == "darwin":
+        for p in (Path("/opt/homebrew/bin/chrome-devtools-mcp"), Path("/usr/local/bin/chrome-devtools-mcp")):
+            if p.is_file():
+                return str(p)
+    else:
+        for p in (Path("/usr/local/bin/chrome-devtools-mcp"), Path.home() / ".local" / "bin" / "chrome-devtools-mcp"):
+            if p.is_file():
+                return str(p)
     return "chrome-devtools-mcp"
 
 
+def _candidate_port_files() -> list[tuple[bool, Path]]:
+    """Return list of (is_google_chrome, DevToolsActivePort_path)."""
+    home = Path.home()
+    if sys.platform == "win32":
+        local_ad = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+        return [
+            (True, local_ad / "Google" / "Chrome" / "User Data" / "DevToolsActivePort"),
+            (False, local_ad / "Microsoft" / "Edge" / "User Data" / "DevToolsActivePort"),
+            (False, local_ad / "BraveSoftware" / "Brave-Browser" / "User Data" / "DevToolsActivePort"),
+            (False, local_ad / "Chromium" / "User Data" / "DevToolsActivePort"),
+        ]
+    if sys.platform == "darwin":
+        app_sup = home / "Library" / "Application Support"
+        return [
+            (True, app_sup / "Google" / "Chrome" / "DevToolsActivePort"),
+            (True, app_sup / "Google" / "Chrome Canary" / "DevToolsActivePort"),
+            (False, app_sup / "Microsoft Edge" / "DevToolsActivePort"),
+            (False, app_sup / "BraveSoftware" / "Brave-Browser" / "DevToolsActivePort"),
+            (False, app_sup / "Arc" / "User Data" / "DevToolsActivePort"),
+            (False, app_sup / "Chromium" / "DevToolsActivePort"),
+        ]
+    return [
+        (True, home / ".config" / "google-chrome" / "DevToolsActivePort"),
+        (False, home / ".config" / "microsoft-edge" / "DevToolsActivePort"),
+        (False, home / ".config" / "BraveSoftware" / "Brave-Browser" / "DevToolsActivePort"),
+        (False, home / ".config" / "chromium" / "DevToolsActivePort"),
+        (False, home / "snap" / "chromium" / "common" / "chromium" / "DevToolsActivePort"),
+    ]
+
+
 def main() -> int:
-    local_appdata = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-    chrome_port_file = local_appdata / "Google" / "Chrome" / "User Data" / "DevToolsActivePort"
-    edge_port_file = local_appdata / "Microsoft" / "Edge" / "User Data" / "DevToolsActivePort"
-
-    chrome_info = _read_active_port(chrome_port_file)
-    edge_info = _read_active_port(edge_port_file)
-
     mcp_bin = _resolve_chrome_mcp_bin()
     extra_args = [a for a in sys.argv[1:] if a not in ("--autoConnect", "--auto-connect")]
 
-    if edge_info and not chrome_info:
-        port, ws_path = edge_info
-        cmd = [mcp_bin, "--wsEndpoint", f"ws://127.0.0.1:{port}{ws_path}", "--no-usage-statistics", *extra_args]
-    elif edge_info and chrome_info:
-        # Prefer whichever DevToolsActivePort file was updated more recently
-        if edge_port_file.stat().st_mtime >= chrome_port_file.stat().st_mtime:
-            port, ws_path = edge_info
-            cmd = [mcp_bin, "--wsEndpoint", f"ws://127.0.0.1:{port}{ws_path}", "--no-usage-statistics", *extra_args]
-        else:
+    active_matches: list[tuple[float, bool, int, str]] = []
+    for is_chrome, pfile in _candidate_port_files():
+        info = _read_active_port(pfile)
+        if info is not None:
+            port, ws_path, mtime = info
+            active_matches.append((mtime, is_chrome, port, ws_path))
+
+    is_linux_headless = (
+        sys.platform.startswith("linux")
+        and not os.environ.get("DISPLAY")
+        and not os.environ.get("WAYLAND_DISPLAY")
+    )
+
+    if active_matches:
+        active_matches.sort(key=lambda item: item[0], reverse=True)
+        _, is_chrome, port, ws_path = active_matches[0]
+        if is_chrome and sys.platform != "darwin":
             cmd = [mcp_bin, "--autoConnect", "--no-usage-statistics", *extra_args]
+        else:
+            cmd = [mcp_bin, "--wsEndpoint", f"ws://127.0.0.1:{port}{ws_path}", "--no-usage-statistics", *extra_args]
+    elif is_linux_headless and "--headless" not in extra_args:
+        cmd = [mcp_bin, "--headless", "--no-usage-statistics", *extra_args]
     else:
         cmd = [mcp_bin, "--autoConnect", "--no-usage-statistics", *extra_args]
+
+    if sys.platform != "win32":
+        os.execvp(cmd[0], cmd)
 
     proc = subprocess.Popen(cmd)
     _bind_kill_on_close_job(proc)
