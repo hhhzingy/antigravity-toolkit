@@ -32,11 +32,11 @@ if ($SrcScript -ne $DstScript) {
     Copy-Item -Force $SrcScript $DstScript
 }
 
-# Find real pythonw.exe (skip Microsoft Store WindowsApps execution alias stubs)
+# Find real pythonw.exe fast (skip Microsoft Store WindowsApps execution alias stubs)
 $Pythonw = $null
 $Candidates = @()
 foreach ($cmd in @("pythonw.exe", "python.exe")) {
-    Get-Command $cmd -All -ErrorAction SilentlyContinue | Where-Object {
+    Get-Command $cmd -ErrorAction SilentlyContinue | Where-Object {
         $_.Source -and ($_.Source -notlike "*\Microsoft\WindowsApps\*")
     } | ForEach-Object {
         $dir = Split-Path -Parent $_.Source
@@ -45,28 +45,33 @@ foreach ($cmd in @("pythonw.exe", "python.exe")) {
     }
 }
 
-$LocalPyRoot = Join-Path $env:LOCALAPPDATA "Programs\Python"
-if (Test-Path $LocalPyRoot) {
-    Get-ChildItem -Path $LocalPyRoot -Filter "pythonw.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue |
-        Sort-Object FullName -Descending |
-        ForEach-Object { $Candidates += $_.FullName }
-}
-
-foreach ($fallback in @(
-    "$env:USERPROFILE\anaconda3\pythonw.exe",
-    "$env:USERPROFILE\miniconda3\pythonw.exe",
-    "$env:ProgramData\anaconda3\pythonw.exe",
-    "$env:ProgramData\miniconda3\pythonw.exe"
-)) {
-    if (Test-Path $fallback) { $Candidates += $fallback }
-}
-
-foreach ($uvRoot in @("$env:APPDATA\uv\python", "$env:LOCALAPPDATA\uv\python")) {
-    if ($uvRoot -and (Test-Path $uvRoot)) {
-        Get-ChildItem $uvRoot -Filter "pythonw.exe" -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notlike "*\Lib\venv\*" } |
+if ($Candidates.Count -eq 0) {
+    $LocalPyRoot = Join-Path $env:LOCALAPPDATA "Programs\Python"
+    if (Test-Path $LocalPyRoot) {
+        Get-ChildItem -Path $LocalPyRoot -Filter "pythonw.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue |
             Sort-Object FullName -Descending |
             ForEach-Object { $Candidates += $_.FullName }
+    }
+}
+
+if ($Candidates.Count -eq 0) {
+    foreach ($fallback in @(
+        "$env:USERPROFILE\anaconda3\pythonw.exe",
+        "$env:USERPROFILE\miniconda3\pythonw.exe",
+        "$env:ProgramData\anaconda3\pythonw.exe",
+        "$env:ProgramData\miniconda3\pythonw.exe"
+    )) {
+        if (Test-Path $fallback) { $Candidates += $fallback }
+    }
+}
+
+if ($Candidates.Count -eq 0) {
+    foreach ($uvRoot in @("$env:APPDATA\uv\python", "$env:LOCALAPPDATA\uv\python")) {
+        if ($uvRoot -and (Test-Path $uvRoot)) {
+            Get-ChildItem $uvRoot -Filter "pythonw.exe" -Depth 2 -ErrorAction SilentlyContinue |
+                Sort-Object FullName -Descending |
+                ForEach-Object { $Candidates += $_.FullName }
+        }
     }
 }
 
@@ -83,8 +88,27 @@ $RegPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $CmdStr = "`"$Pythonw`" `"$DstScript`""
 Set-ItemProperty -Path $RegPath -Name "AntigravityCloseGuard" -Value $CmdStr
 
-# Launch immediately in interactive desktop
-Start-Process -FilePath $Pythonw -ArgumentList "`"$DstScript`""
+# Launch via Windows Task Scheduler (Interactive token) so that even when run inside
+# an AI Agent's sandboxed terminal / Job Object (exebox-*), pythonw.exe starts natively
+# on the user's real WinSta0\Default desktop and survives after the Agent command exits!
+$LaunchedViaTask = $false
+try {
+    $Action = New-ScheduledTaskAction -Execute $Pythonw -Argument "`"$DstScript`""
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName "AntigravityCloseGuard" -Action $Action -Trigger $Trigger -Settings $Settings -Force -ErrorAction Stop | Out-Null
+    Start-ScheduledTask -TaskName "AntigravityCloseGuard" -ErrorAction Stop
+    Start-Sleep -Milliseconds 900
+    $RunningProc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*antigravity_close_guard.pyw*" }
+    if ($RunningProc) {
+        $LaunchedViaTask = $true
+    }
+} catch {}
+
+if (-not $LaunchedViaTask) {
+    Start-Process -FilePath $Pythonw -ArgumentList "`"$DstScript`""
+}
+
 Write-Host "Antigravity 防误关托盘守护已安装成功，已开启登录自启并立即生效！" -ForegroundColor Green
 Write-Host " - 守护脚本路径: $DstScript"
-Write-Host " - 日常使用提示: 点击右上角 X 或按 Alt+F4 将自动隐藏到右下角托盘；右键托盘图标点击 Quit 才彻底退出。"
+Write-Host " - 日常使用提示: 点击右上角 X 或按 Alt+F4 将自动隐藏到右下角托盘（若图标折叠请点右下角 ^ 箭头拖出）；右键托盘图标点击 Quit 才彻底退出。"

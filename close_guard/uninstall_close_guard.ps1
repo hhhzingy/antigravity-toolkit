@@ -1,8 +1,9 @@
 ﻿# Requires -Version 5.1
 $ErrorActionPreference = "SilentlyContinue"
 
-# 1. Remove HKCU Run autostart
+# 1. Remove HKCU Run autostart & Scheduled Task
 Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "AntigravityCloseGuard"
+Unregister-ScheduledTask -TaskName "AntigravityCloseGuard" -Confirm:$false -ErrorAction SilentlyContinue
 
 # 2. Gracefully notify Close Guard hidden window first so any hidden Antigravity windows pop back onto screen
 try {

@@ -29,10 +29,23 @@ import time
 import winreg
 
 # ---------------------------------------------------------------------------
-# 1. Per-Monitor DPI Awareness V2 (must run before any Win32 GUI/Hook calls)
+# 1. Interactive Desktop Attachment & Per-Monitor DPI Awareness V2
+#    (must run before any Win32 GUI/Hook calls)
 # ---------------------------------------------------------------------------
 if sys.platform != "win32":
     sys.exit(0)
+
+try:
+    _u32 = ctypes.windll.user32
+    _u32.OpenDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _u32.OpenDesktopW.restype = wintypes.HANDLE
+    _u32.SetThreadDesktop.argtypes = [wintypes.HANDLE]
+    _u32.SetThreadDesktop.restype = wintypes.BOOL
+    _hdesk_default = _u32.OpenDesktopW("Default", 0, False, 0x01FF)
+    if _hdesk_default:
+        _u32.SetThreadDesktop(_hdesk_default)
+except Exception:
+    pass
 
 try:
     ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))

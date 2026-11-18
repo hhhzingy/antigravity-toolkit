@@ -216,7 +216,9 @@ if (-not $NpmBinPath) {
 }
 
 Write-Step "[5/5] Writing Antigravity MCP config & routing rules"
+Copy-Item -Force (Join-Path $ScriptDir "chrome-devtools-launcher.py") (Join-Path $WorkspaceDir "chrome-devtools-launcher.py")
 $UserForward = ($env:USERPROFILE -replace "\\", "/")
+$PythonForward = ($PythonExe -replace "\\", "/")
 $UvForward = ($UvExe -replace "\\", "/")
 $NpmBinForward = ($NpmBinPath -replace "\\", "/")
 
@@ -225,9 +227,10 @@ import json, sys
 from pathlib import Path
 
 cfg_path = Path(sys.argv[1])
-npm_bin = sys.argv[2]
-uv_bin = sys.argv[3]
-user_home = sys.argv[4]
+python_bin = sys.argv[2]
+npm_bin = sys.argv[3]
+uv_bin = sys.argv[4]
+user_home = sys.argv[5]
 
 data = {}
 if cfg_path.exists() and cfg_path.stat().st_size > 0:
@@ -241,11 +244,15 @@ if not isinstance(data, dict):
 
 servers = data.setdefault("mcpServers", {})
 servers["chrome-devtools"] = {
-    "command": npm_bin,
+    "command": python_bin,
     "args": [
-        "--autoConnect",
-        "--no-usage-statistics",
+        "-B",
+        f"{user_home}/mcp-gui-workspace/chrome-devtools-launcher.py",
     ],
+    "env": {
+        "CHROME_DEVTOOLS_MCP_BIN": npm_bin,
+        "PYTHONIOENCODING": "utf-8",
+    },
 }
 servers["windows-uia-mcp"] = {
     "command": uv_bin,
@@ -281,7 +288,7 @@ foreach ($TargetCfg in @(
     (Join-Path $env:USERPROFILE ".gemini\config\mcp_config.json"),
     (Join-Path $env:USERPROFILE ".gemini\antigravity\mcp_config.json")
 )) {
-    $MergePyScript | & $PythonExe -B - $TargetCfg $NpmBinForward $UvForward $UserForward
+    $MergePyScript | & $PythonExe -B - $TargetCfg $PythonForward $NpmBinForward $UvForward $UserForward
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to update MCP config: $TargetCfg"
     }

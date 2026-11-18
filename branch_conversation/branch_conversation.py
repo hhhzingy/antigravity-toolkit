@@ -430,9 +430,30 @@ def _get_antigravity_zoom_factor() -> float:
     return 1.0
 
 
+def _attach_win32_default_desktop() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        u32 = ctypes.windll.user32
+        u32.OpenDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        u32.OpenDesktopW.restype = wintypes.HANDLE
+        u32.SetThreadDesktop.argtypes = [wintypes.HANDLE]
+        u32.SetThreadDesktop.restype = wintypes.BOOL
+        hdesk = u32.OpenDesktopW("Default", 0, False, 0x01FF)
+        if hdesk:
+            u32.SetThreadDesktop(hdesk)
+    except Exception:
+        pass
+
+
 def auto_open_in_antigravity(search_token: str) -> bool:
     if sys.platform != "win32":
         return False
+
+    _attach_win32_default_desktop()
 
     import ctypes
     from ctypes import wintypes
@@ -964,6 +985,7 @@ def branch_conversation(
 # ---------------------------------------------------------------------------
 def run_gui() -> None:
     if sys.platform == "win32":
+        _attach_win32_default_desktop()
         import ctypes
 
         try:

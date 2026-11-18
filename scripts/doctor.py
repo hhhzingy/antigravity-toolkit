@@ -574,6 +574,28 @@ def _check_windows_run_registry(value_name: str) -> Tuple[bool, str]:
         return False, f"无法读取注册表项 ({redact_home(str(exc))})"
 
 
+def _check_windows_close_guard_alive() -> Tuple[bool, str]:
+    """Verify AntigravityCloseGuardHiddenWnd is actively running on WinSta0\\Default."""
+    if not IS_WINDOWS:
+        return False, "非 Windows 平台"
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        u32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        hdesk = u32.OpenDesktopW("Default", 0, False, 0x01FF)
+        if hdesk:
+            u32.SetThreadDesktop(hdesk)
+        hwnd = u32.FindWindowW("AntigravityCloseGuardHiddenWnd", None)
+        if hwnd:
+            pid = wintypes.DWORD()
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            return True, f"后台守护正在运行 (PID {pid.value})"
+        return False, "当前未在后台运行（请重新运行 install_close_guard.ps1 启动）"
+    except Exception as exc:
+        return False, f"状态检测异常 ({redact_home(str(exc))})"
+
+
 def check_module_close_guard() -> Dict[str, Any]:
     home = Path.home()
     guard_dir = home / "mcp-gui-workspace" / "antigravity-close-guard"
@@ -595,6 +617,14 @@ def check_module_close_guard() -> Dict[str, Any]:
             "path": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\AntigravityCloseGuard",
             "ok": reg_ok,
             "detail": reg_detail,
+        })
+
+        alive_ok, alive_detail = _check_windows_close_guard_alive()
+        items.append({
+            "label": "实时后台驻留进程状态",
+            "path": "WinSta0\\Default (AntigravityCloseGuardHiddenWnd)",
+            "ok": alive_ok,
+            "detail": alive_detail,
         })
         install_cmd = r".\install.ps1 -Module 2"
     else:
