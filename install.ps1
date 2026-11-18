@@ -9,8 +9,8 @@
 
 .EXAMPLE
     .\install.ps1               # 启动交互式菜单（推荐新手使用）
-    .\install.ps1 -All          # 一键安装全部三项推荐优化
-    .\install.ps1 -Module 1     # 仅安装模块 1（支持 1, 2, 3）
+    .\install.ps1 -All          # 一键安装全部推荐增强模块
+    .\install.ps1 -Module 1     # 按编号安装指定模块（如 1, 2, 3）
     .\install.ps1 -Doctor       # 运行环境与安装状态健康自检
     .\install.ps1 -Uninstall    # 卸载防误关系统托盘守护
 #>
@@ -55,8 +55,8 @@ function Show-Usage {
     Write-Host "Antigravity Toolkit (Windows) 使用说明" -ForegroundColor Cyan
     Write-Host "------------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host "  .\install.ps1                启动可视化数字菜单（默认推荐）"
-    Write-Host "  .\install.ps1 -All           一键安装全部推荐优化 (模块 1 + 2 + 3)"
-    Write-Host "  .\install.ps1 -Module 1      按编号安装指定模块 (可选: 1, 2, 3)"
+    Write-Host "  .\install.ps1 -All           一键安装全部推荐增强模块"
+    Write-Host "  .\install.ps1 -Module 1      按编号安装指定模块 (如 1, 2, 3)"
     Write-Host "  .\install.ps1 -Module 2,3    同时安装多个指定模块"
     Write-Host "  .\install.ps1 -Doctor        运行环境与安装状态自检 (Doctor)"
     Write-Host "  .\install.ps1 -Uninstall     停止并卸载防误关系统托盘守护"
@@ -180,7 +180,7 @@ function Invoke-ModuleInstall {
 
 function Invoke-InstallAll {
     Write-Host ""
-    Write-Host "即将依次为您安装全部 3 项 Antigravity 推荐增强模块..." -ForegroundColor Cyan
+    Write-Host "即将依次为您安装全部 Antigravity 推荐增强模块..." -ForegroundColor Cyan
     $ok1 = Invoke-ModuleInstall -Id "1"
     $ok2 = Invoke-ModuleInstall -Id "2"
     $ok3 = Invoke-ModuleInstall -Id "3"

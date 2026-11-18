@@ -3,8 +3,8 @@
 #
 # 用法示例:
 #   ./install.sh                  启动交互式数字菜单（推荐新手使用）
-#   ./install.sh --all            一键安装全部三项推荐优化
-#   ./install.sh --module 1       按编号安装指定模块 (支持 1, 2, 3 或 1,2)
+#   ./install.sh --all            一键安装全部推荐增强模块
+#   ./install.sh --module 1       按编号安装指定模块 (如 1, 2, 3 或 1,2)
 #   ./install.sh --doctor         运行环境与安装状态健康自检
 #   ./install.sh --uninstall      停止并卸载防误关系统托盘守护
 
@@ -36,8 +36,8 @@ show_usage() {
   echo -e "${C_BOLD}${C_CYAN}Antigravity Toolkit (Ubuntu / Linux) 使用说明${C_RESET}"
   echo -e "${C_DIM}------------------------------------------------------------${C_RESET}"
   echo "  ./install.sh                  启动可视化数字菜单（默认推荐）"
-  echo "  ./install.sh --all            一键安装全部推荐优化 (模块 1 + 2 + 3)"
-  echo "  ./install.sh --module 1       按编号安装指定模块 (可选: 1, 2, 3)"
+  echo "  ./install.sh --all            一键安装全部推荐增强模块"
+  echo "  ./install.sh --module 1       按编号安装指定模块 (如 1, 2, 3)"
   echo "  ./install.sh --module 2,3     同时安装多个指定模块"
   echo "  ./install.sh --doctor         运行环境与安装状态自检 (Doctor)"
   echo "  ./install.sh --uninstall      停止并卸载防误关系统托盘守护"
@@ -109,7 +109,7 @@ install_module() {
 
 install_all() {
   echo ""
-  echo -e "${C_CYAN}即将依次为您安装全部 3 项 Antigravity 推荐增强模块...${C_RESET}"
+  echo -e "${C_CYAN}即将依次为您安装全部 Antigravity 推荐增强模块...${C_RESET}"
   local ok=0
   install_module "1" || ok=1
   install_module "2" || ok=1

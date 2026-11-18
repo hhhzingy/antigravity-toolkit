@@ -31,6 +31,7 @@
 - [computer_use/README.md](./computer_use/README.md)：⚡ 桌面与浏览器极速控制模块（配置模板、补丁与一键部署脚本）
 - [close_guard/README.md](./close_guard/README.md)：🛡️ 防误关系统托盘守护模块（Windows `.pyw` 与 Linux X11 `.py` 守护程序及启停脚本）
 - [branch_conversation/README.md](./branch_conversation/README.md)：🌿 历史对话任意轮次分支模块（可视化克隆器、CLI 与全局 AI 技能）
+- **新增扩展模块**：欢迎以独立子目录（配套一键安装/卸载脚本与 `README.md`）的形式贡献新的实用功能，或让你的 Antigravity Agent 协助完成编码与自检！
 
 ---
 
@@ -73,8 +74,8 @@ Contributions of all kinds are warmly welcomed—even if this is your very first
 
 - **Report bugs or UX friction**: Open an Issue describing your OS (e.g., Windows 11 or Ubuntu 22.04) and paste the output of `python scripts/doctor.py` (with any personal info removed if applicable).
 - **Improve documentation**: Spot a confusing step in [README_EN.md](./README_EN.md) or [README.md](./README.md)? Clarifications, screenshots, and translations are hugely appreciated.
-- **Suggest new ideas**: Share workflow pain points you would love to see solved next.
-- **Submit code & fixes**: Improve cross-platform polish, installer UX, or DPI / desktop compatibility.
+- **Suggest new ideas**: Share workflow pain points or new enhancement modules you would love to see added next.
+- **Submit code & fixes**: Improve cross-platform polish, installer UX, DPI / desktop compatibility, or contribute new standalone modules (feel free to pair with your Antigravity Agent!).
 
 ### Quick Pull Request Workflow
 

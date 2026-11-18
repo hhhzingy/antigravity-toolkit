@@ -763,7 +763,7 @@ def print_human_report(report: Dict[str, Any], style: Style) -> None:
     print()
 
     # Section 2: Modules
-    print(style.bold("[二] 三大增强模块安装状态检查"))
+    print(style.bold("[二] 功能增强模块安装状态检查"))
     print(style.dim("----------------------------------------------------------------"))
     for mod in report["modules"]:
         mst = mod["status"]
