@@ -1,0 +1,36 @@
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "C:/Users/<YOUR_USERNAME>/AppData/Roaming/npm/chrome-devtools-mcp.cmd",
+      "args": [
+        "--autoConnect",
+        "--no-usage-statistics"
+      ]
+    },
+    "windows-uia-mcp": {
+      "command": "C:/Users/<YOUR_USERNAME>/.local/bin/uv.exe",
+      "args": [
+        "--directory",
+        "C:/Users/<YOUR_USERNAME>/mcp-gui-workspace/Windows-MCP",
+        "run",
+        "windows-mcp",
+        "serve"
+      ],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    "windows-ocr-mcp": {
+      "command": "C:/Users/<YOUR_USERNAME>/.local/bin/uv.exe",
+      "args": [
+        "--directory",
+        "C:/Users/<YOUR_USERNAME>/mcp-gui-workspace/computer-control-mcp",
+        "run",
+        "computer-control-mcp"
+      ],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

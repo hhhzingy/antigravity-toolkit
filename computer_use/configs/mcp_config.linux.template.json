@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "/home/<YOUR_USERNAME>/mcp-gui-workspace/linux-gui-mcp/chrome-devtools-launcher.sh",
+      "args": []
+    },
+    "linux-uia-mcp": {
+      "command": "/home/<YOUR_USERNAME>/mcp-gui-workspace/linux-gui-mcp/.venv/bin/linux-gui-mcp",
+      "args": [],
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "DISPLAY": ":0"
+      }
+    },
+    "linux-ocr-mcp": {
+      "command": "/home/<YOUR_USERNAME>/mcp-gui-workspace/computer-control-mcp/.venv/bin/computer-control-mcp",
+      "args": [],
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "DISPLAY": ":0"
+      }
+    }
+  }
+}

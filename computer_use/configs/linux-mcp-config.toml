@@ -1,0 +1,11 @@
+[desktop_control]
+enabled = true
+consent_countdown_seconds = 0
+idle_timeout_seconds = 2
+mouse_takeover_units = 500
+
+[control]
+enabled = true
+consent_countdown_seconds = 0
+idle_timeout_seconds = 2
+mouse_takeover_units = 500

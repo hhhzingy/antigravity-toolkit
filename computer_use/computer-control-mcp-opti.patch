@@ -1,0 +1,173 @@
+diff --git a/src/computer_control_mcp/core.py b/src/computer_control_mcp/core.py
+index 1ae8f82..3dae041 100644
+--- a/src/computer_control_mcp/core.py
++++ b/src/computer_control_mcp/core.py
+@@ -20,6 +20,17 @@
+ from typing import Union
+ import threading
+ 
++# --- Per-Monitor DPI V2 Awareness (Windows HiDPI) before PyAutoGUI import ---
++if sys.platform == "win32":
++    import ctypes
++    try:
++        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
++    except Exception:
++        try:
++            ctypes.windll.shcore.SetProcessDpiAwareness(2)
++        except Exception:
++            pass
++
+ # --- Auto-install dependencies if needed ---
+ import pyautogui
+ from mcp.server.fastmcp import FastMCP, Image
+@@ -179,13 +190,18 @@ def _mss_screenshot(region=None):
+             # Full screen screenshot
+             monitor = sct.monitors[0]  # All monitors combined
+         else:
+-            # Region screenshot
++            # Region screenshot (clamped to virtual monitor bounds for X11/multi-monitor safety)
+             left, top, width, height = region
++            full = sct.monitors[0]
++            clamped_left = max(int(left), int(full["left"]))
++            clamped_top = max(int(top), int(full["top"]))
++            max_w = int(full["left"] + full["width"]) - clamped_left
++            max_h = int(full["top"] + full["height"]) - clamped_top
+             monitor = {
+-                "left": left,
+-                "top": top,
+-                "width": width,
+-                "height": height,
++                "left": clamped_left,
++                "top": clamped_top,
++                "width": max(1, min(int(width), max_w)),
++                "height": max(1, min(int(height), max_h)),
+             }
+ 
+         screenshot = sct.grab(monitor)
+@@ -437,23 +453,26 @@ def take_screenshot(
+     Returns:
+         Returns a single screenshot as MCP Image object. "content type image not supported" means preview isnt supported but Image object is there and returned successfully.
+     """
++    temp_dir = None
+     try:
+-        all_windows = gw.getAllWindows()
+-
+-        # Convert to list of dictionaries for _find_matching_window
+-        windows = []
+-        for window in all_windows:
+-            if window.title:  # Only include windows with titles
+-                windows.append(
+-                    {
+-                        "title": window.title,
+-                        "window_obj": window,  # Store the actual window object
+-                    }
+-                )
++        window = None
++        if title_pattern:
++            all_windows = gw.getAllWindows()
++
++            # Convert to list of dictionaries for _find_matching_window
++            windows = []
++            for w in all_windows:
++                if w.title:  # Only include windows with titles
++                    windows.append(
++                        {
++                            "title": w.title,
++                            "window_obj": w,  # Store the actual window object
++                        }
++                    )
+ 
+-        log(f"Found {len(windows)} windows")
+-        window = _find_matching_window(windows, title_pattern, use_regex, threshold)
+-        window = window["window_obj"] if window else None
++            log(f"Found {len(windows)} windows")
++            matched = _find_matching_window(windows, title_pattern, use_regex, threshold)
++            window = matched["window_obj"] if matched else None
+ 
+         import ctypes
+         import time
+@@ -645,23 +664,26 @@ def take_screenshot_with_ocr(
+     Returns:
+         Returns a list of UI elements as List[Tuple[List[List[int]], str, float]] where each tuple is [[4 corners of box], text, confidence], "content type image not supported" means preview isnt supported but Image object is there.
+     """
++    temp_dir = None
+     try:
+-        all_windows = gw.getAllWindows()
+-
+-        # Convert to list of dictionaries for _find_matching_window
+-        windows = []
+-        for window in all_windows:
+-            if window.title:  # Only include windows with titles
+-                windows.append(
+-                    {
+-                        "title": window.title,
+-                        "window_obj": window,  # Store the actual window object
+-                    }
+-                )
++        window = None
++        if title_pattern:
++            all_windows = gw.getAllWindows()
++
++            # Convert to list of dictionaries for _find_matching_window
++            windows = []
++            for w in all_windows:
++                if w.title:  # Only include windows with titles
++                    windows.append(
++                        {
++                            "title": w.title,
++                            "window_obj": w,  # Store the actual window object
++                        }
++                    )
+ 
+-        log(f"Found {len(windows)} windows")
+-        window = _find_matching_window(windows, title_pattern, use_regex, threshold)
+-        window = window["window_obj"] if window else None
++            log(f"Found {len(windows)} windows")
++            matched = _find_matching_window(windows, title_pattern, use_regex, threshold)
++            window = matched["window_obj"] if matched else None
+ 
+         # Store the currently active window
+ 
+@@ -739,16 +761,27 @@ def take_screenshot_with_ocr(
+         # cv2.imwrite("resized_img.png", resized_img)
+ 
+         output = engine(resized_img)
+-        boxes = output.boxes
+-        txts = output.txts
+-        scores = output.scores
++        boxes = output.boxes if output and output.boxes is not None else []
++        txts = output.txts if output and output.txts is not None else []
++        scores = output.scores if output and output.scores is not None else []
+         zipped_results = list(zip(boxes, txts, scores))
++
++        scale_factor = 100.0 / float(scale_percent_for_ocr)
++        offset_x = max(int(window.left), 0) if window else 0
++        offset_y = max(int(window.top), 0) if window else 0
++
+         zipped_results = [
+             (
+-                box.tolist(),
++                [
++                    [
++                        int(round(pt[0] * scale_factor)) + offset_x,
++                        int(round(pt[1] * scale_factor)) + offset_y,
++                    ]
++                    for pt in (box.tolist() if hasattr(box, "tolist") else box)
++                ],
+                 text,
+                 float(score),
+-            )  # convert np.array -> list, ensure score is float
++            )
+             for box, text, score in zipped_results
+         ]
+         log(f"Found {len(zipped_results)} text items in OCR result.")
+@@ -767,6 +800,9 @@ def take_screenshot_with_ocr(
+         stack_trace = traceback.format_exc()
+         log(f"Stack trace:\n{stack_trace}")
+         return f"Error in screenshot or getting UI elements: {str(e)}\nStack trace:\n{stack_trace}"
++    finally:
++        if temp_dir is not None:
++            shutil.rmtree(temp_dir, ignore_errors=True)
+ 
+ 
+ @mcp.tool()

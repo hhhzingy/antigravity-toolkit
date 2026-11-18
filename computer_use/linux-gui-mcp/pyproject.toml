@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "linux-gui-mcp"
+version = "0.2.0"
+description = "Ultra-fast Linux X11 + AT-SPI2 Desktop Computer Use MCP Server (pure-vision <0.08s, active-window-only UI tree <0.15s, mouse-shake takeover guard)."
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "mcp[cli]>=1.13.0,<2.0",
+    "pydantic>=2.11.0,<2.12",
+    "pillow>=10.0.0",
+    "mss>=7.0.0",
+    "tomli>=2.0.0; python_version<'3.11'",
+]
+
+[project.scripts]
+linux-gui-mcp = "linux_gui_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/linux_gui_mcp"]

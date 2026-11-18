@@ -1,0 +1,173 @@
+diff --git a/src/windows_mcp/desktop/service.py b/src/windows_mcp/desktop/service.py
+index c6e7658..b7b6c99 100644
+--- a/src/windows_mcp/desktop/service.py
++++ b/src/windows_mcp/desktop/service.py
+@@ -141,7 +141,7 @@ class Desktop:
+     def get_state(
+         self,
+         use_annotation: bool | str = True,
+-        use_vision: bool | str = False,
++        use_vision: bool | str = True,
+         use_dom: bool | str = False,
+         use_ui_tree: bool | str = True,
+         as_bytes: bool | str = False,
+@@ -192,9 +192,10 @@ class Desktop:
+         # UIAutomation calls (get_controls_handles / get_windows / get_active_window)
+         # can hang when an app is launching and not responding to WM messages.
+         if use_ui_tree:
+-            controls_handles = self.get_controls_handles()  # Taskbar,Program Manager,Apps, Dialogs
+-            windows, windows_handles = self.get_windows(controls_handles=controls_handles)  # Apps
+-            active_window = self.get_active_window(windows=windows)  # Active Window
++            controls_handles = []
++            windows = []
++            windows_handles = set()
++            active_window = self.get_active_window(windows=[])  # Active Window only (fast path)
+             active_window_handle = active_window.handle if active_window else None
+         else:
+             controls_handles = []
+@@ -204,8 +205,12 @@ class Desktop:
+             active_window_handle = None
+ 
+         try:
+-            active_desktop = get_current_desktop()
+-            all_desktops = get_all_desktops()
++            if use_ui_tree:
++                active_desktop = get_current_desktop()
++                all_desktops = get_all_desktops()
++            else:
++                active_desktop = {"id": "00000000-0000-0000-0000-000000000000", "name": "Default Desktop"}
++                all_desktops = [active_desktop]
+         except RuntimeError:
+             active_desktop = {
+                 "id": "00000000-0000-0000-0000-000000000000",
+@@ -224,9 +229,6 @@ class Desktop:
+         logger.debug(f"Windows: {windows}")
+ 
+         if use_ui_tree:
+-            other_windows_handles = set(controls_handles) - windows_handles
+-            if active_window_handle is not None:
+-                other_windows_handles.discard(active_window_handle)
+             tree_active_window_handle = active_window_handle
+             if screenshot_region:
+                 active_window_in_region = (
+@@ -235,17 +237,10 @@ class Desktop:
+                 tree_active_window_handle = (
+                     active_window_handle if active_window_in_region else None
+                 )
+-                other_windows_handles.update(
+-                    window.handle
+-                    for window in windows
+-                    if self._filter_window_to_region(window, screenshot_region) is not None
+-                )
+-            # controls_handles is in z-order, front first. Keep that order: the tree walks the
+-            # windows in the order given and skips the rest once the element limit is reached.
+-            z_order = {handle: index for index, handle in enumerate(controls_handles)}
++            # Only scan the current focused window; skip Taskbar and background windows.
+             tree_state = self.tree.get_state(
+                 tree_active_window_handle,
+-                sorted(other_windows_handles, key=lambda h: z_order.get(h, len(z_order))),
++                [],
+                 use_dom=use_dom,
+             )
+         else:
+@@ -285,7 +280,7 @@ class Desktop:
+         screenshot_original_size = None
+         applied_scale = None
+         if use_vision:
+-            if use_annotation:
++            if use_annotation and (use_ui_tree or grid_lines):
+                 nodes = tree_state.interactive_nodes
+                 screenshot = self.get_annotated_screenshot(
+                     nodes=nodes,
+@@ -1345,12 +1340,16 @@ class Desktop:
+                 return False
+ 
+         # For even more faster results (still under development)
++        _IGNORED_CLASSES = {"Progman", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
++
+         def callback(hwnd, _):
+             try:
+-                # Validate handle before checking properties
++                # Validate handle before checking properties; skip untitled and taskbar/desktop shell windows
+                 if (
+                     win32gui.IsWindow(hwnd)
+                     and win32gui.IsWindowVisible(hwnd)
++                    and win32gui.GetWindowTextLength(hwnd) > 0
++                    and win32gui.GetClassName(hwnd) not in _IGNORED_CLASSES
+                     and is_window_on_current_desktop(hwnd)
+                     and not owned_by_this_server(hwnd)
+                 ):
+@@ -1360,13 +1359,6 @@ class Desktop:
+                 pass
+ 
+         win32gui.EnumWindows(callback, None)
+-
+-        if desktop_hwnd := win32gui.FindWindow("Progman", None):
+-            handles.append(desktop_hwnd)
+-        if taskbar_hwnd := win32gui.FindWindow("Shell_TrayWnd", None):
+-            handles.append(taskbar_hwnd)
+-        if secondary_taskbar_hwnd := win32gui.FindWindow("Shell_SecondaryTrayWnd", None):
+-            handles.append(secondary_taskbar_hwnd)
+         # EnumWindows reports the windows in z-order (front first), and get_windows() takes the
+         # position as each window's depth. The shell windows are usually reported by EnumWindows
+         # too, so keep each handle at its first position only.
+diff --git a/src/windows_mcp/tools/_snapshot_helpers.py b/src/windows_mcp/tools/_snapshot_helpers.py
+index 9ed05ee..a81633c 100644
+--- a/src/windows_mcp/tools/_snapshot_helpers.py
++++ b/src/windows_mcp/tools/_snapshot_helpers.py
+@@ -112,7 +112,7 @@ def capture_desktop_state(
+     screenshot_bytes = None
+     if use_vision and desktop_state.screenshot is not None:
+         buffered = io.BytesIO()
+-        desktop_state.screenshot.save(buffered, format="PNG")
++        desktop_state.screenshot.save(buffered, format="PNG", compress_level=1)
+         screenshot_bytes = buffered.getvalue()
+         buffered.close()
+     if profile_enabled:
+diff --git a/src/windows_mcp/tools/snapshot.py b/src/windows_mcp/tools/snapshot.py
+index f5d09e0..d5e1176 100644
+--- a/src/windows_mcp/tools/snapshot.py
++++ b/src/windows_mcp/tools/snapshot.py
+@@ -37,7 +37,7 @@ def register(mcp, *, get_desktop, get_analytics):
+     )
+     @with_analytics(get_analytics(), "State-Tool", run_sync_in_thread=False)
+     def _state_tool(
+-        use_vision: bool | str = False,
++        use_vision: bool | str = True,
+         use_dom: bool | str = False,
+         use_annotation: bool | str = True,
+         use_ui_tree: bool | str = True,
+diff --git a/src/windows_mcp/tree/service.py b/src/windows_mcp/tree/service.py
+index 7cae1c4..a6f347f 100644
+--- a/src/windows_mcp/tree/service.py
++++ b/src/windows_mcp/tree/service.py
+@@ -125,9 +125,9 @@ class Tree:
+         active_window_flag=False
+         if active_window_handle:
+             active_window_flag=True
+-            windows_handles=[active_window_handle]+other_windows_handles
++            windows_handles=[active_window_handle]
+         else:
+-            windows_handles=other_windows_handles
++            windows_handles=[]
+ 
+         interactive_nodes,scrollable_nodes,dom_informative_nodes,failed_handles,window_sem_nodes=self.get_window_wise_nodes(windows_handles=windows_handles,active_window_flag=active_window_flag,use_dom=use_dom)
+         root_node=TreeElementNode(
+@@ -258,7 +258,7 @@ class Tree:
+             is_browser = False
+             try:
+                 temp_node = ControlFromHandle(handle)
+-                if active_window_flag and temp_node.ClassName == "Progman":
++                if temp_node.ClassName in ("Progman", "Shell_TrayWnd", "Shell_SecondaryTrayWnd") or temp_node.Name.strip() in ("", "???", "Taskbar"):
+                     continue
+                 is_browser = self.desktop.is_window_browser(temp_node)
+             except Exception as e:
+@@ -673,7 +673,7 @@ class Tree:
+                                 try:
+                                     value = node.GetCachedPropertyValue(PropertyId.LegacyIAccessibleValueProperty)
+                                     metadata['value']=value.strip() if value else '(empty)'
+-                                    if not is_password and not is_dom:
++                                    if not is_password and not is_dom and os.getenv("WINDOWS_MCP_WORD_NODES", "").strip().lower() in {"1", "true", "yes", "on"}:
+                                         words=node.GetAllWordBoundingBoxes()
+                                         for word,boxes in words:
+                                             for box in boxes:
