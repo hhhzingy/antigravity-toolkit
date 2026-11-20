@@ -50,8 +50,8 @@ python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --id
 
 # Full clone / drop last K turns / branch at turn N
 python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --id <conversation_id> --open
-python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --id <conversation_id> --drop-last 1
-python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --id <conversation_id> --turn <N>
+python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --id <conversation_id> --drop-last 1 --open
+python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --id <conversation_id> --turn <N> --open
 
 # Open visual Studio GUI picker
 python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --gui

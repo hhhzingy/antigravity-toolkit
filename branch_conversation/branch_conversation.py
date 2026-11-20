@@ -149,12 +149,22 @@ def gen_metadata_max_step(blob: bytes) -> int:
     return -1
 
 
+def apply_uuid_replacements(
+    blob: bytes | None, rep_pairs: list[tuple[bytes, bytes]]
+) -> bytes | None:
+    if blob is None or not rep_pairs:
+        return blob
+    out = blob
+    for old_b, new_b in rep_pairs:
+        if old_b in out:
+            out = out.replace(old_b, new_b)
+    return out
+
+
 def rebuild_raw_summary(
     raw: bytes,
     *,
-    old_cid: str,
-    new_cid: str,
-    old_tid: str,
+    rep_pairs: list[tuple[bytes, bytes]],
     new_tid: str,
     new_title: str,
     new_step_count: int,
@@ -164,9 +174,6 @@ def rebuild_raw_summary(
     if not raw:
         return b""
 
-    old_cid_b = old_cid.encode("ascii")
-    new_cid_b = new_cid.encode("ascii")
-    old_tid_b = old_tid.encode("ascii")
     new_tid_b = new_tid.encode("ascii")
     title_b = new_title.encode("utf-8")
     now_ts = make_pb_timestamp(now_ns)
@@ -189,21 +196,13 @@ def rebuild_raw_summary(
             new_fields.append((5, 0, 1))  # 1 = CASCADE_RUN_STATUS_IDLE
             saw_status = True
         elif fnum == 15 and wtype == 2 and isinstance(val, bytes):
-            sub = parse_pb_fields(val)
-            new_sub: list[tuple[int, int, int | bytes]] = []
-            has_sub_title = False
-            for sf, sw, sv in sub:
-                if sf == 1 and sw == 2:
-                    new_sub.append((1, 2, title_b))
-                    has_sub_title = True
-                elif sf == 7 and sw == 2:
-                    new_sub.append((7, 2, now_ts))
-                else:
-                    if isinstance(sv, bytes):
-                        sv = sv.replace(old_cid_b, new_cid_b).replace(old_tid_b, new_tid_b)
-                    new_sub.append((sf, sw, sv))
-            if not has_sub_title:
-                new_sub.insert(0, (1, 2, title_b))
+            # Clean ConversationAnnotations: keep ONLY fresh title (1) and last_user_view_time (7).
+            # Strip source conversation's side_question_cascade_ids (17), side_question_titles (18),
+            # and archived flags (4, 5) so they never leak into the branched conversation.
+            new_sub: list[tuple[int, int, int | bytes]] = [
+                (1, 2, title_b),
+                (7, 2, now_ts),
+            ]
             new_fields.append((15, 2, serialize_pb_fields(new_sub)))
         elif fnum == 16 and wtype == 0:
             new_fields.append((16, 0, max(0, new_last_user_idx)))
@@ -211,7 +210,7 @@ def rebuild_raw_summary(
             continue
         else:
             if isinstance(val, bytes):
-                val = val.replace(old_cid_b, new_cid_b).replace(old_tid_b, new_tid_b)
+                val = apply_uuid_replacements(val, rep_pairs) or b""
             new_fields.append((fnum, wtype, val))
 
     if not saw_title:
@@ -609,6 +608,132 @@ def _is_vscode_ide_window(title: str, exe_path: str) -> bool:
     return False
 
 
+def _auto_open_in_antigravity_linux(search_token: str) -> bool:
+    """Finds Antigravity X11 main window, clicks the top-left Search icon, pastes search_token, and presses Return."""
+    if not shutil.which("xdotool"):
+        return False
+
+    try:
+        from Xlib import X, display as xdisplay
+        from Xlib.protocol import event as xevent
+    except ImportError:
+        return False
+
+    try:
+        dpy = xdisplay.Display()
+        root = dpy.screen().root
+        atom_role = dpy.intern_atom("WM_WINDOW_ROLE")
+        atom_active = dpy.intern_atom("_NET_ACTIVE_WINDOW")
+        atom_state = dpy.intern_atom("_NET_WM_STATE")
+        atom_max_h = dpy.intern_atom("_NET_WM_STATE_MAXIMIZED_HORZ")
+        atom_max_v = dpy.intern_atom("_NET_WM_STATE_MAXIMIZED_VERT")
+        atom_extents = dpy.intern_atom("_GTK_FRAME_EXTENTS")
+
+        target_win = None
+        for w in root.query_tree().children:
+            try:
+                wm_cls = w.get_wm_class()
+                if not wm_cls or not any("antigravity" == c.lower() for c in wm_cls):
+                    continue
+                if w.get_wm_transient_for():
+                    continue
+                role_prop = w.get_full_property(atom_role, X.AnyPropertyType)
+                if role_prop and role_prop.value:
+                    role_str = (
+                        role_prop.value.decode("utf-8", errors="ignore").strip("\x00")
+                        if isinstance(role_prop.value, bytes)
+                        else str(role_prop.value)
+                    )
+                    if role_str != "browser-window":
+                        continue
+                geom = w.get_geometry()
+                if geom.width >= 320 and geom.height >= 200:
+                    target_win = w
+                    break
+            except Exception:
+                continue
+
+        if target_win is None:
+            dpy.close()
+            return False
+
+        attrs = target_win.get_attributes()
+        if attrs.map_state != X.IsViewable:
+            target_win.map()
+        ev = xevent.ClientMessage(
+            window=target_win,
+            client_type=atom_active,
+            data=(32, [2, X.CurrentTime, 0, 0, 0]),
+        )
+        root.send_event(ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+        dpy.flush()
+        time.sleep(0.18)
+
+        coords = root.translate_coords(target_win, 0, 0)
+        inset_left = 0
+        inset_top = 0
+        st_prop = target_win.get_full_property(atom_state, X.AnyPropertyType)
+        states = set(st_prop.value) if (st_prop and st_prop.value) else set()
+        if (atom_max_h not in states) and (atom_max_v not in states):
+            ext_prop = target_win.get_full_property(atom_extents, X.AnyPropertyType)
+            if ext_prop and ext_prop.value and len(ext_prop.value) >= 4:
+                inset_left = int(ext_prop.value[0])
+                inset_top = int(ext_prop.value[2])
+
+        frame_left = coords.x + inset_left
+        frame_top = coords.y + inset_top
+
+        dpi_scale = 1.0
+        try:
+            xrdb_out = subprocess.check_output(["xrdb", "-query"], text=True, timeout=2)
+            m = re.search(r"Xft\.dpi:\s*([0-9.]+)", xrdb_out)
+            if m and float(m.group(1)) > 48:
+                dpi_scale = float(m.group(1)) / 96.0
+        except Exception:
+            pass
+
+        zoom = _get_antigravity_zoom_factor()
+        search_x = frame_left + round(159.5 * zoom * dpi_scale)
+        search_y = frame_top + round((43.5 + 21.0 * zoom) * dpi_scale)
+
+        old_qp = root.query_pointer()
+        old_x, old_y = int(old_qp.root_x), int(old_qp.root_y)
+        dpy.close()
+
+        subprocess.run(
+            ["xdotool", "mousemove", "--sync", str(search_x), str(search_y), "click", "1"],
+            check=True,
+            timeout=4,
+        )
+        subprocess.run(["xdotool", "mousemove", str(old_x), str(old_y)], check=False, timeout=2)
+        time.sleep(0.24)
+
+        if shutil.which("xclip"):
+            prev_clip: bytes | None = None
+            res = subprocess.run(["xclip", "-selection", "clipboard", "-o"], capture_output=True, timeout=2)
+            if res.returncode == 0:
+                prev_clip = res.stdout
+            subprocess.run(
+                ["xclip", "-selection", "clipboard", "-i"],
+                input=search_token.encode("utf-8"),
+                check=True,
+                timeout=3,
+            )
+            subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"], check=True, timeout=3)
+            time.sleep(0.32)
+            subprocess.run(["xdotool", "key", "--clearmodifiers", "Return"], check=True, timeout=3)
+            time.sleep(0.08)
+            if prev_clip is not None:
+                subprocess.run(["xclip", "-selection", "clipboard", "-i"], input=prev_clip, check=False, timeout=2)
+        else:
+            subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "10", search_token], check=True, timeout=4)
+            time.sleep(0.32)
+            subprocess.run(["xdotool", "key", "--clearmodifiers", "Return"], check=True, timeout=3)
+        return True
+    except Exception:
+        return False
+
+
 def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid: str = "") -> bool:
     if surface == "cli" and new_cid:
         agy_bin = shutil.which("agy.exe") or shutil.which("agy.cmd") or shutil.which("agy")
@@ -634,6 +759,9 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
             except Exception:
                 pass
         return False
+
+    if sys.platform.startswith("linux"):
+        return _auto_open_in_antigravity_linux(search_token)
 
     if sys.platform != "win32":
         return False
@@ -838,12 +966,77 @@ def pick_branch_title(
     return f"{base_title} [{suffix_tag} {idx}]"
 
 
-def replace_uuid_bytes(
-    blob: bytes | None, old_cid_b: bytes, new_cid_b: bytes, old_tid_b: bytes, new_tid_b: bytes
-) -> bytes | None:
-    if blob is None:
+def extract_init_state_id(blob: bytes | None) -> str | None:
+    if not blob:
         return None
-    return blob.replace(old_cid_b, new_cid_b).replace(old_tid_b, new_tid_b)
+    try:
+        for fnum, wtype, val in parse_pb_fields(blob):
+            if fnum == 3 and wtype == 2 and isinstance(val, bytes) and len(val) == 36:
+                s = val.decode("ascii", errors="ignore")
+                if _UUID_RE.match(s):
+                    return s
+    except Exception:
+        pass
+    return None
+
+
+def collect_child_uuids_for_isolation(
+    sum_conn: sqlite3.Connection | None, old_cid: str, brain_root: Path = AGY_ROOT
+) -> set[str]:
+    """
+    Collects all child subagent, swarm worker, and side-question UUIDs belonging to old_cid
+    so they can be remapped to isolated placeholder UUIDs in the branched conversation's
+    historical steps, preventing any cross-conversation wakeup, hijacking, or termination.
+    """
+    child_ids: set[str] = set()
+    if sum_conn is not None:
+        try:
+            for (c,) in sum_conn.execute(
+                "SELECT conversation_id FROM conversation_summaries WHERE parent_conversation_id = ?",
+                (old_cid,),
+            ).fetchall():
+                if c and _UUID_RE.match(c):
+                    child_ids.add(c)
+        except Exception:
+            pass
+
+        try:
+            for (c,) in sum_conn.execute(
+                "SELECT conversation_id FROM conversation_parents WHERE parent_id = ?",
+                (old_cid,),
+            ).fetchall():
+                if c and _UUID_RE.match(c):
+                    child_ids.add(c)
+        except Exception:
+            pass
+
+    src_sg = brain_root / "brain" / old_cid / ".system_generated"
+    sub_dir = src_sg / "subagents"
+    if sub_dir.exists():
+        for jf in sub_dir.glob("*.json"):
+            if _UUID_RE.match(jf.stem):
+                child_ids.add(jf.stem)
+            try:
+                scid = json.loads(jf.read_text(encoding="utf-8", errors="ignore")).get("conversationId", "")
+                if scid and _UUID_RE.match(scid):
+                    child_ids.add(scid)
+            except Exception:
+                pass
+
+    sw_members = src_sg / "swarm" / "members.json"
+    if sw_members.exists():
+        try:
+            members = json.loads(sw_members.read_text(encoding="utf-8", errors="ignore")).get("members", {})
+            for minfo in members.values():
+                if isinstance(minfo, dict):
+                    wcid = minfo.get("conversation_id", "")
+                    if wcid and _UUID_RE.match(wcid):
+                        child_ids.add(wcid)
+        except Exception:
+            pass
+
+    child_ids.discard(old_cid)
+    return child_ids
 
 
 def _branch_cli_jsonl_conversation(
@@ -886,7 +1079,32 @@ def _branch_cli_jsonl_conversation(
     new_cid = str(uuid.uuid4())
     src_dir = AGY_CLI_ROOT / "brain" / old_cid
     dst_dir = AGY_CLI_ROOT / "brain" / new_cid
-    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+
+    child_uuids = collect_child_uuids_for_isolation(None, old_cid, brain_root=AGY_CLI_ROOT)
+    cli_rep_pairs: list[tuple[str, str]] = [(old_cid, new_cid)]
+    for cu in sorted(child_uuids):
+        if cu != old_cid:
+            cli_rep_pairs.append((cu, str(uuid.uuid4())))
+
+    def _apply_cli_reps(text: str) -> str:
+        for o_s, n_s in cli_rep_pairs:
+            if o_s in text:
+                text = text.replace(o_s, n_s)
+        return text
+
+    def _ignore_cli_runtime(dir_path: str, names: list[str]) -> set[str]:
+        p = Path(dir_path)
+        if p == src_dir:
+            return {n for n in names if n == "scratch"}
+        if p.name == ".system_generated":
+            return {n for n in names if n != "logs"}
+        if p.name == "scratch":
+            return set(names)
+        if p.name == "browser_sandbox":
+            return {n for n in names if n != "references"}
+        return set()
+
+    shutil.copytree(src_dir, dst_dir, ignore=_ignore_cli_runtime, dirs_exist_ok=True)
 
     kept_steps = 0
     for log_name in ("transcript.jsonl", "transcript_full.jsonl"):
@@ -902,7 +1120,7 @@ def _branch_cli_jsonl_conversation(
                 except Exception:
                     continue
                 if sidx <= max_step_idx:
-                    out_lines.append(ln.replace(old_cid, new_cid))
+                    out_lines.append(_apply_cli_reps(ln))
             lf.write_text("\n".join(out_lines) + ("\n" if out_lines else ""), encoding="utf-8")
             kept_steps = max(kept_steps, len(out_lines))
 
@@ -982,6 +1200,7 @@ def branch_conversation(
         src_info = resolve_source_conversation(sum_conn, source_cid, title_query)
         old_cid = src_info["conversation_id"]
         orig_title = src_info["title"] or "Untitled"
+        child_uuids_to_isolate = collect_child_uuids_for_isolation(sum_conn, old_cid)
 
         turns = get_conversation_turns(old_cid, src_info.get("status", ""))
         completed_turns = [t for t in turns if t["completed"]]
@@ -1035,6 +1254,7 @@ def branch_conversation(
 
     new_cid = str(uuid.uuid4())
     new_tid = str(uuid.uuid4())
+    new_init_id = str(uuid.uuid4())
     search_token = f"agybranch{new_cid.replace('-', '')[:12]}"
     dst_conv_db = AGY_ROOT / "conversations" / f"{new_cid}.db"
     dst_conv_db.parent.mkdir(parents=True, exist_ok=True)
@@ -1046,17 +1266,35 @@ def branch_conversation(
     finally:
         src_conn.close()
 
-    old_cid_b = old_cid.encode("ascii")
-    new_cid_b = new_cid.encode("ascii")
+    pid_keep = (src_info.get("project_id") or "").strip()
+    rep_str_pairs: list[tuple[str, str]] = [(old_cid, new_cid)]
 
     try:
         tmeta = dst_conn.execute("SELECT trajectory_id, cascade_id FROM trajectory_meta LIMIT 1").fetchone()
         old_tid = tmeta[0] if tmeta else str(uuid.uuid4())
-        old_tid_b = old_tid.encode("ascii")
-        new_tid_b = new_tid.encode("ascii")
+        rep_str_pairs.append((old_tid, new_tid))
+
+        # Detect initializationStateId from trajectory_metadata_blob so the branch gets a fresh session init ID
+        tblob_row = dst_conn.execute(
+            "SELECT data FROM trajectory_metadata_blob WHERE id = 'main' LIMIT 1"
+        ).fetchone()
+        if not tblob_row:
+            tblob_row = dst_conn.execute("SELECT data FROM trajectory_metadata_blob LIMIT 1").fetchone()
+        old_init_id = extract_init_state_id(tblob_row[0] if tblob_row else None)
+        if old_init_id and old_init_id not in (old_cid, old_tid, pid_keep):
+            rep_str_pairs.append((old_init_id, new_init_id))
+
+        for cu in sorted(child_uuids_to_isolate):
+            if cu not in (old_cid, old_tid, pid_keep, old_init_id):
+                rep_str_pairs.append((cu, str(uuid.uuid4())))
+
+        rep_bytes_pairs: list[tuple[bytes, bytes]] = [
+            (o.encode("ascii"), n.encode("ascii")) for o, n in rep_str_pairs
+        ]
 
         dst_conn.execute("DELETE FROM steps WHERE idx >= ?", (cutoff_count,))
         dst_conn.execute("UPDATE steps SET status = 3 WHERE status IN (1, 2)")
+        dst_conn.execute("DELETE FROM battle_mode_infos")
 
         for gm_idx, gm_data in dst_conn.execute("SELECT idx, data FROM gen_metadata").fetchall():
             if gm_data and gen_metadata_max_step(gm_data) >= cutoff_count:
@@ -1076,12 +1314,12 @@ def branch_conversation(
                    SET metadata=?, error_details=?, permissions=?, task_details=?, render_info=?, step_payload=?
                    WHERE idx=?""",
                 (
-                    replace_uuid_bytes(meta, old_cid_b, new_cid_b, old_tid_b, new_tid_b),
-                    replace_uuid_bytes(err, old_cid_b, new_cid_b, old_tid_b, new_tid_b),
-                    replace_uuid_bytes(perm, old_cid_b, new_cid_b, old_tid_b, new_tid_b),
-                    replace_uuid_bytes(task_d, old_cid_b, new_cid_b, old_tid_b, new_tid_b),
-                    replace_uuid_bytes(rend, old_cid_b, new_cid_b, old_tid_b, new_tid_b),
-                    replace_uuid_bytes(payload, old_cid_b, new_cid_b, old_tid_b, new_tid_b),
+                    apply_uuid_replacements(meta, rep_bytes_pairs),
+                    apply_uuid_replacements(err, rep_bytes_pairs),
+                    apply_uuid_replacements(perm, rep_bytes_pairs),
+                    apply_uuid_replacements(task_d, rep_bytes_pairs),
+                    apply_uuid_replacements(rend, rep_bytes_pairs),
+                    apply_uuid_replacements(payload, rep_bytes_pairs),
                     idx,
                 ),
             )
@@ -1091,11 +1329,10 @@ def branch_conversation(
             ("executor_metadata", "idx"),
             ("parent_references", "idx"),
             ("trajectory_metadata_blob", "id"),
-            ("battle_mode_infos", "idx"),
         ]:
             for pk, data in dst_conn.execute(f"SELECT [{pk_col}], data FROM [{tbl}]").fetchall():
                 if data:
-                    new_data = replace_uuid_bytes(data, old_cid_b, new_cid_b, old_tid_b, new_tid_b)
+                    new_data = apply_uuid_replacements(data, rep_bytes_pairs)
                     dst_conn.execute(f"UPDATE [{tbl}] SET data=? WHERE [{pk_col}]=?", (new_data, pk))
 
         final_step_count = dst_conn.execute("SELECT COUNT(*) FROM steps").fetchone()[0]
@@ -1110,19 +1347,31 @@ def branch_conversation(
     finally:
         dst_conn.close()
 
-    # Copy brain/<old_cid> -> brain/<new_cid> & trim transcript.jsonl
+    # Copy brain/<old_cid> -> brain/<new_cid> with strict runtime isolation & trim transcript.jsonl
     src_brain = AGY_ROOT / "brain" / old_cid
     dst_brain = AGY_ROOT / "brain" / new_cid
     if src_brain.exists():
-        def _ignore_heavy_temp(dir_path: str, names: list[str]) -> set[str]:
+        def _ignore_runtime_and_temp(dir_path: str, names: list[str]) -> set[str]:
             p = Path(dir_path)
+            if p == src_brain:
+                return {n for n in names if n == "scratch"}
             if p.name == ".system_generated":
-                return {n for n in names if n in ("tasks", "steps")}
+                # Whitelist ONLY 'logs' (transcript.jsonl). Never copy 'swarm', 'subagents',
+                # 'messages', 'tasks', 'steps', or any live runtime state from the source conversation!
+                return {n for n in names if n != "logs"}
             if p.name == "scratch":
                 return set(names)
+            if p.name == "browser_sandbox":
+                return {n for n in names if n != "references"}
             return set()
 
-        shutil.copytree(src_brain, dst_brain, ignore=_ignore_heavy_temp, dirs_exist_ok=True)
+        def _apply_str_reps(text: str) -> str:
+            for o_str, n_str in rep_str_pairs:
+                if o_str in text:
+                    text = text.replace(o_str, n_str)
+            return text
+
+        shutil.copytree(src_brain, dst_brain, ignore=_ignore_runtime_and_temp, dirs_exist_ok=True)
         for f in dst_brain.rglob("*"):
             if not f.is_file():
                 continue
@@ -1136,15 +1385,16 @@ def branch_conversation(
                                 continue
                         except Exception:
                             pass
-                        kept_lines.append(ln.replace(old_cid, new_cid))
+                        kept_lines.append(_apply_str_reps(ln))
                     f.write_text("\n".join(kept_lines) + ("\n" if kept_lines else ""), encoding="utf-8")
                 except Exception:
                     pass
             elif f.suffix.lower() in (".md", ".json", ".resolved"):
                 try:
                     txt = f.read_text(encoding="utf-8")
-                    if old_cid in txt:
-                        f.write_text(txt.replace(old_cid, new_cid), encoding="utf-8")
+                    ntxt = _apply_str_reps(txt)
+                    if ntxt != txt:
+                        f.write_text(ntxt, encoding="utf-8")
                 except Exception:
                     pass
 
@@ -1165,9 +1415,7 @@ def branch_conversation(
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f+00:00")
     new_raw_summary = rebuild_raw_summary(
         src_info.get("raw_summary") or b"",
-        old_cid=old_cid,
-        new_cid=new_cid,
-        old_tid=old_tid,
+        rep_pairs=rep_bytes_pairs,
         new_tid=new_tid,
         new_title=new_title,
         new_step_count=final_step_count,
@@ -1186,6 +1434,11 @@ def branch_conversation(
     new_row["killed"] = 0
     new_row["last_user_input_step_index"] = new_last_user_idx
     new_row["raw_summary"] = new_raw_summary
+    for clear_col in ("parent_conversation_id", "battle_id", "winning_conversation_id", "group_id", "agent_name"):
+        if clear_col in new_row:
+            new_row[clear_col] = ""
+    if "nesting_depth" in new_row:
+        new_row["nesting_depth"] = 0
 
     pmap = load_projects_map()
     pid_val = (src_info.get("project_id") or "").strip()
@@ -3280,10 +3533,38 @@ def run_gui() -> None:
         except Exception:
             pass
 
+    # ---- Linux Real Antigravity Window Icon (from app.asar / cache) ------
+    linux_icon_ref: list[tk.PhotoImage] = []
+
+    def _apply_linux_window_icon() -> None:
+        if not sys.platform.startswith("linux"):
+            return
+        try:
+            cache_icon = Path.home() / ".cache" / "antigravity-close-guard" / "antigravity-tray.png"
+            if not cache_icon.exists():
+                asar = Path("/opt/Antigravity/resources/app.asar")
+                if asar.exists():
+                    cache_icon.parent.mkdir(parents=True, exist_ok=True)
+                    with asar.open("rb") as f:
+                        pre = f.read(16)
+                        hdr_total = 8 + struct.unpack("<I", pre[4:8])[0]
+                        header = json.loads(f.read(struct.unpack("<I", pre[12:16])[0]).decode("utf-8"))
+                        node = header.get("files", {}).get("icon.png")
+                        if node and "offset" in node and "size" in node:
+                            f.seek(hdr_total + int(node["offset"]))
+                            cache_icon.write_bytes(f.read(int(node["size"])))
+            if cache_icon.exists():
+                ico = tk.PhotoImage(file=str(cache_icon))
+                linux_icon_ref.append(ico)
+                root.iconphoto(True, ico)
+        except Exception:
+            pass
+
     # Populate initial data while hidden so first frame is 100% rendered & flicker-free
     root.update_idletasks()
     reload_conversations()
 
+    _apply_linux_window_icon()
     root.deiconify()
     root.update_idletasks()
     _apply_win32_studio_chrome()

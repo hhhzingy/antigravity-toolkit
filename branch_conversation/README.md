@@ -15,7 +15,7 @@
 
 有了 `branch_conversation`：
 - **像玩游戏“读档开新支线”一样简单**：选中任意一个历史对话、点选你想保留到第几轮结束（比如保留第 `1..8` 轮，自动忽略第 9 轮之后的内容），一键生成一条完全独立的新对话！
-- **免重启秒见、秒开**：新创建的分支会立即出现在 Antigravity 左侧会话列表最上方和左上角搜索框里（Windows 下点击创建后还会**自动帮你切进新分支页面**），全程无需重启软件，也不会打断任何正在后台运行的任务。
+- **免重启秒见、秒开**：新创建的分支会立即出现在 Antigravity 左侧会话列表最上方和左上角搜索框里（Windows 与 Ubuntu / Linux X11 下点击创建后还会**自动帮你切进新分支页面**），全程无需重启软件，也不会打断任何正在后台运行的任务。
 
 ---
 
@@ -25,8 +25,10 @@
   完全独立工作在用户目录，不改动软件本体，因此 Antigravity 日常自动升级后功能依然稳定可用。
 - **原对话 100% 零改动、热备份不冲突**：
   采用 SQLite 官方的在线热备份机制读取源对话快照——即使源对话里 AI 正在思考或执行任务，也能安全克隆出一个处于干净“待输入”状态的新对话，绝不会损坏或干扰原对话。
+- **多智能体（Swarm / Subagents）与侧边提问彻底隔离、防串台**：
+  即使源对话使用过 `/swarm` 多智能体协作、后台子智能体或侧边提问（Side Questions），分支工具也会严格按白名单过滤运行态目录、重新生成独立的会话初始化状态并隔离重映射所有子会话标识，绝不会误唤醒或串入原对话的后台智能体。
 - **纯 Python 标准库实现**：
-  无需配置复杂的第三方依赖包，Windows 与 Ubuntu / Linux 开箱即用。
+  核心克隆逻辑无需安装第三方 Python 包，Windows、macOS 与 Ubuntu / Linux 开箱即用（同时兼容 Antigravity 桌面版、IDE 与 `agy` CLI）。
 
 ---
 
@@ -125,8 +127,8 @@ python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --gu
 # 查看指定对话的轮次列表
 python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --title "my-web-app" --list-turns
 
-# 克隆第 1..5 轮生成新分支
-python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --title "my-web-app" --turn 5
+# 克隆第 1..5 轮生成新分支并自动打开
+python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --title "my-web-app" --turn 5 --open
 ```
 
 ---
@@ -134,9 +136,9 @@ python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --ti
 ## 五、常见问题解答 (FAQ)
 
 <details>
-<summary><b>Q1：在新分支里继续聊天、修改计划，会影响原来的对话吗？</b></summary>
+<summary><b>Q1：在新分支里继续聊天、修改计划，会影响原来的对话吗？如果原对话开了 Swarm 多智能体呢？</b></summary>
 
-**完全不会！** 新分支拥有独立的对话 ID、独立的数据库与独立的对话产物目录（`brain/<UUID>/`），和原对话彻底隔离、互不干扰。需要留意的是，如果你的代码仓库本身在同一个本地文件夹里，让两个对话同时改同一份代码文件自然还是会改到同一个磁盘目录上。
+**完全不会！** 新分支拥有独立的对话 ID、独立的初始化状态、独立的数据库与独立的对话产物目录（`brain/<UUID>/`）；原对话中的 `/swarm` 团队成员、后台子智能体（Subagents）、消息队列与侧边提问（Side Questions）都会被彻底物理隔离并重映射，绝不会误唤醒或串台。需要留意的是，如果你的代码仓库本身在同一个本地文件夹里，让两个对话同时改同一份代码文件自然还是会改到同一个磁盘目录上。
 </details>
 
 <details>

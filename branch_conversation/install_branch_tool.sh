@@ -16,18 +16,26 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-# Ensure tkinter is available for --gui mode on GUI sessions (skip on Headless SSH)
+# Ensure tkinter (and X11 auto-open helpers on Linux) are available on GUI sessions (skip on Headless SSH)
 if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ] || [ "$(uname -s)" = "Darwin" ]; then
-  if ! python3 -c "import tkinter" >/dev/null 2>&1; then
-    if [ "$(uname -s)" = "Darwin" ]; then
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if ! python3 -c "import tkinter" >/dev/null 2>&1; then
       echo "[Tip] Run 'brew install python-tk' if you want to open the visual --gui window (CLI & AI skill work out of the box)."
-    elif command -v apt-get >/dev/null 2>&1; then
-      echo "Installing python3-tk for the visual conversation branching window..."
-      sudo apt-get update -qq && sudo apt-get install -y -qq python3-tk || \
-        echo "[Tip] Run 'sudo apt-get install -y python3-tk' later if you want to open the visual --gui window."
-    else
-      echo "[Tip] Install python3-tk / python3-tkinter via your package manager to enable the visual --gui window."
     fi
+  elif command -v apt-get >/dev/null 2>&1; then
+    MISSING_PKGS=()
+    python3 -c "import tkinter" >/dev/null 2>&1 || MISSING_PKGS+=("python3-tk")
+    if [ -n "${DISPLAY:-}" ]; then
+      command -v xdotool >/dev/null 2>&1 || MISSING_PKGS+=("xdotool")
+      command -v xclip >/dev/null 2>&1 || MISSING_PKGS+=("xclip")
+    fi
+    if [ "${#MISSING_PKGS[@]}" -gt 0 ]; then
+      echo "Installing Linux GUI / auto-open helpers (${MISSING_PKGS[*]})..."
+      sudo apt-get update -qq && sudo apt-get install -y -qq "${MISSING_PKGS[@]}" || \
+        echo "[Tip] Run 'sudo apt-get install -y ${MISSING_PKGS[*]}' later for visual --gui & X11 auto-open."
+    fi
+  elif ! python3 -c "import tkinter" >/dev/null 2>&1; then
+    echo "[Tip] Install python3-tk / python3-tkinter via your package manager to enable the visual --gui window."
   fi
 fi
 
