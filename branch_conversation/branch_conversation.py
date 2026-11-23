@@ -755,6 +755,28 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
                     check=False,
                 )
                 if res.returncode == 0:
+                    if app_name == "Antigravity" and search_token:
+                        safe_tok = search_token.replace('"', '\\"')
+                        subprocess.run(
+                            [
+                                "osascript",
+                                "-e",
+                                'delay 0.2',
+                                "-e",
+                                'tell application "System Events" to keystroke "k" using command down',
+                                "-e",
+                                'delay 0.3',
+                                "-e",
+                                f'tell application "System Events" to keystroke "{safe_tok}"',
+                                "-e",
+                                'delay 0.55',
+                                "-e",
+                                'tell application "System Events" to key code 36',
+                            ],
+                            capture_output=True,
+                            timeout=5.0,
+                            check=False,
+                        )
                     return True
             except Exception:
                 pass
@@ -803,11 +825,25 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
     user32.GetWindowTextW.argtypes = [wintypes.HWND, ctypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = ctypes.c_long
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    user32.AttachThreadInput.restype = wintypes.BOOL
+    user32.BringWindowToTop.argtypes = [wintypes.HWND]
+    user32.BringWindowToTop.restype = wintypes.BOOL
+    kernel32.GetCurrentThreadId.argtypes = []
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
     app_hwnds: list[int] = []
+    hidden_app_hwnds: list[int] = []
     ide_hwnds: list[int] = []
 
     def _cb(hwnd: int, _: int) -> bool:
-        if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4):
+        if user32.GetWindow(hwnd, 4):
+            return True
+        if user32.GetWindowLongW(hwnd, -20) & 0x00000080:  # WS_EX_TOOLWINDOW
             return True
         cls = ctypes.create_unicode_buffer(64)
         user32.GetClassNameW(hwnd, cls, 64)
@@ -825,15 +861,29 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
                     if exe_str.lower().endswith(("\\antigravity.exe", "\\antigravity ide.exe", "\\agy-ide.exe")):
                         tbuf = ctypes.create_unicode_buffer(512)
                         user32.GetWindowTextW(hwnd, tbuf, 512)
+                        rc_chk = wintypes.RECT()
+                        user32.GetWindowRect(hwnd, ctypes.byref(rc_chk))
+                        is_large = (rc_chk.right - rc_chk.left) >= 320 and (rc_chk.bottom - rc_chk.top) >= 200
+                        is_vis = bool(user32.IsWindowVisible(hwnd))
                         if _is_vscode_ide_window(tbuf.value, exe_str):
-                            ide_hwnds.append(int(hwnd))
-                        else:
+                            if is_vis:
+                                ide_hwnds.append(int(hwnd))
+                        elif is_vis:
                             app_hwnds.append(int(hwnd))
+                        elif is_large:
+                            hidden_app_hwnds.append(int(hwnd))
             finally:
                 kernel32.CloseHandle(hproc)
         return True
 
     user32.EnumWindows(WNDENUMPROC(_cb), 0)
+    if not app_hwnds and hidden_app_hwnds:
+        # Antigravity was hidden in System Tray by Close Guard: restore it before opening branch
+        h_rest = hidden_app_hwnds[0]
+        user32.ShowWindow(h_rest, 5)  # SW_SHOW
+        time.sleep(0.22)
+        app_hwnds.append(h_rest)
+
     if not app_hwnds:
         if ide_hwnds:
             ide_h = ide_hwnds[0]
@@ -846,9 +896,24 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
     hwnd = app_hwnds[0]
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, 9)
-        time.sleep(0.18)
-    user32.SetForegroundWindow(hwnd)
-    time.sleep(0.12)
+        time.sleep(0.20)
+
+    # Reliable foreground handoff via AttachThreadInput so Windows never silently denies focus
+    fg_hwnd = user32.GetForegroundWindow()
+    cur_tid = kernel32.GetCurrentThreadId()
+    fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+    tgt_tid = user32.GetWindowThreadProcessId(hwnd, None)
+    attached_fg = bool(fg_tid and fg_tid != cur_tid and user32.AttachThreadInput(cur_tid, fg_tid, True))
+    attached_tgt = bool(tgt_tid and tgt_tid != cur_tid and tgt_tid != fg_tid and user32.AttachThreadInput(cur_tid, tgt_tid, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached_tgt:
+            user32.AttachThreadInput(cur_tid, tgt_tid, False)
+        if attached_fg:
+            user32.AttachThreadInput(cur_tid, fg_tid, False)
+    time.sleep(0.18)
 
     frame = wintypes.RECT()
     if dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(frame), ctypes.sizeof(frame)) != 0:
@@ -858,20 +923,21 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
     dpi_scale = dpi / 96.0
     zoom = _get_antigravity_zoom_factor()
 
+    # Exact toolbar Search icon center across zoomLevel & DPI (34px native menu bar + 23*zoom toolbar offset)
     search_x = frame.left + round(159.5 * zoom * dpi_scale)
-    search_y = frame.top + round((30.0 + 21.0 * zoom) * dpi_scale)
+    search_y = frame.top + round((34.0 + 23.0 * zoom) * dpi_scale)
 
     old_pt = wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(old_pt))
 
     user32.SetCursorPos(search_x, search_y)
-    time.sleep(0.02)
+    time.sleep(0.03)
     user32.mouse_event(0x0002, 0, 0, 0, 0)
     user32.mouse_event(0x0004, 0, 0, 0, 0)
-    time.sleep(0.02)
+    time.sleep(0.03)
     user32.SetCursorPos(old_pt.x, old_pt.y)
 
-    time.sleep(0.24)
+    time.sleep(0.32)
 
     class KEYBDINPUT(ctypes.Structure):
         _fields_ = [
@@ -913,7 +979,8 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
     arr = (INPUT * len(inputs))(*inputs)
     user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
 
-    time.sleep(0.30)
+    # Allow React search debounce + SQLite FTS5 query (including 50KB+ chunks) to settle before Enter
+    time.sleep(0.55)
     enter_down = INPUT(type=1)
     enter_down.u.ki = KEYBDINPUT(wVk=0x0D, wScan=0, dwFlags=0, time=0, dwExtraInfo=0)
     enter_up = INPUT(type=1)
@@ -3415,8 +3482,6 @@ def run_gui() -> None:
             messagebox.showerror("克隆失败", str(exc), parent=root)
             return
 
-        root.withdraw()
-        root.update()
         res_surface = res.get("surface", "app")
         try:
             root.clipboard_clear()
@@ -3424,7 +3489,10 @@ def run_gui() -> None:
             root.update()
         except Exception:
             pass
+        # Hand off foreground focus to Antigravity BEFORE withdrawing our GUI window
         opened = auto_open_in_antigravity(res["search_token"], surface=res_surface, new_cid=res["new_cid"])
+        root.withdraw()
+        root.update()
         if not opened:
             root.deiconify()
             if res_surface == "cli":
