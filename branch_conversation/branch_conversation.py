@@ -227,11 +227,12 @@ def rebuild_raw_summary(
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
-def load_projects_map() -> dict[str, str]:
+def load_projects_map(projects_dir: Path | None = None) -> dict[str, str]:
     """Map project_id -> human-readable project name from ~/.gemini/config/projects/*.json."""
     pmap: dict[str, str] = {}
-    if PROJECTS_DIR.exists():
-        for jf in PROJECTS_DIR.glob("*.json"):
+    pdir = projects_dir or PROJECTS_DIR
+    if pdir.exists():
+        for jf in pdir.glob("*.json"):
             try:
                 data = json.loads(jf.read_text(encoding="utf-8", errors="ignore"))
                 if data.get("sidecar"):
@@ -242,6 +243,39 @@ def load_projects_map() -> dict[str, str]:
             except Exception:
                 pass
     return pmap
+
+
+def load_project_folder_uris(project_id: str, projects_dir: Path | None = None) -> list[str]:
+    """Return configured `folderUri` entries for `project_id` from ~/.gemini/config/projects/*.json."""
+    pid = (project_id or "").strip()
+    if not pid or pid == "outside-of-project":
+        return []
+    pdir = projects_dir or PROJECTS_DIR
+    if not pdir.exists():
+        return []
+
+    candidates = [pdir / f"{pid}.json"]
+    if not candidates[0].is_file():
+        candidates = list(pdir.glob("*.json"))
+
+    uris: list[str] = []
+    for jf in candidates:
+        if not jf.is_file():
+            continue
+        try:
+            data = json.loads(jf.read_text(encoding="utf-8", errors="ignore"))
+            if (data.get("id") or jf.stem) != pid:
+                continue
+            resources = (data.get("projectResources") or {}).get("resources") or []
+            for item in resources:
+                if isinstance(item, dict):
+                    furi = str(item.get("folderUri") or "").strip()
+                    if furi and furi not in uris:
+                        uris.append(furi)
+            break
+        except Exception:
+            continue
+    return uris
 
 
 def _extract_user_request_multiline(raw_text: str) -> str:
@@ -693,7 +727,7 @@ def _auto_open_in_antigravity_linux(search_token: str) -> bool:
             pass
 
         zoom = _get_antigravity_zoom_factor()
-        search_x = frame_left + round(159.5 * zoom * dpi_scale)
+        search_x = frame_left + round(170.5 * zoom * dpi_scale)
         search_y = frame_top + round((43.5 + 21.0 * zoom) * dpi_scale)
 
         old_qp = root.query_pointer()
@@ -896,24 +930,48 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
     hwnd = app_hwnds[0]
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, 9)
-        time.sleep(0.20)
+        time.sleep(0.22)
 
-    # Reliable foreground handoff via AttachThreadInput so Windows never silently denies focus
-    fg_hwnd = user32.GetForegroundWindow()
-    cur_tid = kernel32.GetCurrentThreadId()
-    fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
-    tgt_tid = user32.GetWindowThreadProcessId(hwnd, None)
-    attached_fg = bool(fg_tid and fg_tid != cur_tid and user32.AttachThreadInput(cur_tid, fg_tid, True))
-    attached_tgt = bool(tgt_tid and tgt_tid != cur_tid and tgt_tid != fg_tid and user32.AttachThreadInput(cur_tid, tgt_tid, True))
-    try:
+    user32.WindowFromPoint.argtypes = [wintypes.POINT]
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t]
+
+    # Reliable foreground handoff via AttachThreadInput (+ Alt unlock fallback if OS foreground lock resists)
+    def _activate_target_window() -> bool:
+        fg_h = user32.GetForegroundWindow()
+        if fg_h == hwnd:
+            return True
+        cur_tid = kernel32.GetCurrentThreadId()
+        fg_tid = user32.GetWindowThreadProcessId(fg_h, None) if fg_h else 0
+        tgt_tid = user32.GetWindowThreadProcessId(hwnd, None)
+        attached_fg = bool(fg_tid and fg_tid != cur_tid and user32.AttachThreadInput(cur_tid, fg_tid, True))
+        attached_tgt = bool(
+            tgt_tid and tgt_tid != cur_tid and tgt_tid != fg_tid and user32.AttachThreadInput(cur_tid, tgt_tid, True)
+        )
+        try:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            if attached_tgt:
+                user32.AttachThreadInput(cur_tid, tgt_tid, False)
+            if attached_fg:
+                user32.AttachThreadInput(cur_tid, fg_tid, False)
+        time.sleep(0.08)
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+        # Standard Win32 foreground-lock release via synthetic VK_MENU tap
+        user32.keybd_event(0x12, 0, 0, 0)
+        user32.keybd_event(0x12, 0, 0x0002, 0)
         user32.BringWindowToTop(hwnd)
         user32.SetForegroundWindow(hwnd)
-    finally:
-        if attached_tgt:
-            user32.AttachThreadInput(cur_tid, tgt_tid, False)
-        if attached_fg:
-            user32.AttachThreadInput(cur_tid, fg_tid, False)
-    time.sleep(0.18)
+        time.sleep(0.10)
+        return bool(user32.GetForegroundWindow() == hwnd)
+
+    if not _activate_target_window():
+        return False
+    time.sleep(0.14)
 
     frame = wintypes.RECT()
     if dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(frame), ctypes.sizeof(frame)) != 0:
@@ -923,9 +981,22 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
     dpi_scale = dpi / 96.0
     zoom = _get_antigravity_zoom_factor()
 
-    # Exact toolbar Search icon center across zoomLevel & DPI (34px native menu bar + 23*zoom toolbar offset)
-    search_x = frame.left + round(159.5 * zoom * dpi_scale)
+    # Exact Antigravity 2.0 toolbar Search icon center across zoomLevel & DPI
+    # Toolbar layout: [A logo] [Sidebar] [Back] [Forward] [Search -> 170.5 CSS px]
+    search_x = frame.left + round(170.5 * zoom * dpi_scale)
     search_y = frame.top + round((34.0 + 23.0 * zoom) * dpi_scale)
+
+    hit_hwnd = user32.WindowFromPoint(wintypes.POINT(search_x, search_y))
+    if hit_hwnd:
+        root_hit = user32.GetAncestor(hit_hwnd, 2)  # GA_ROOT = 2
+        if root_hit and int(root_hit) != int(hwnd):
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            time.sleep(0.08)
+            hit_hwnd2 = user32.WindowFromPoint(wintypes.POINT(search_x, search_y))
+            root_hit2 = user32.GetAncestor(hit_hwnd2, 2) if hit_hwnd2 else 0
+            if root_hit2 and int(root_hit2) != int(hwnd):
+                return False
 
     old_pt = wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(old_pt))
@@ -937,7 +1008,9 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
     time.sleep(0.03)
     user32.SetCursorPos(old_pt.x, old_pt.y)
 
-    time.sleep(0.32)
+    time.sleep(0.36)
+    if user32.GetForegroundWindow() != hwnd:
+        return False
 
     class KEYBDINPUT(ctypes.Structure):
         _fields_ = [
@@ -967,6 +1040,21 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
     user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
     user32.SendInput.restype = wintypes.UINT
 
+    def _vk_ev(vk: int, up: bool = False) -> INPUT:
+        ev = INPUT(type=1)
+        ev.u.ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=0x0002 if up else 0, time=0, dwExtraInfo=0)
+        return ev
+
+    # Select any residual search query (Ctrl+A) so typing search_token cleanly replaces it
+    sel_all = (INPUT * 4)(
+        _vk_ev(0x11, False),
+        _vk_ev(0x41, False),
+        _vk_ev(0x41, True),
+        _vk_ev(0x11, True),
+    )
+    user32.SendInput(4, sel_all, ctypes.sizeof(INPUT))
+    time.sleep(0.03)
+
     inputs: list[INPUT] = []
     for ch in search_token:
         code = ord(ch)
@@ -979,14 +1067,11 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
     arr = (INPUT * len(inputs))(*inputs)
     user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
 
-    # Allow React search debounce + SQLite FTS5 query (including 50KB+ chunks) to settle before Enter
-    time.sleep(0.55)
-    enter_down = INPUT(type=1)
-    enter_down.u.ki = KEYBDINPUT(wVk=0x0D, wScan=0, dwFlags=0, time=0, dwExtraInfo=0)
-    enter_up = INPUT(type=1)
-    enter_up.u.ki = KEYBDINPUT(wVk=0x0D, wScan=0, dwFlags=0x0002, time=0, dwExtraInfo=0)
-    enter_arr = (INPUT * 2)(enter_down, enter_up)
+    # Allow React search debounce + SQLite FTS5 query (including multi-chunk conversations) to settle before Enter
+    time.sleep(0.62)
+    enter_arr = (INPUT * 2)(_vk_ev(0x0D, False), _vk_ev(0x0D, True))
     user32.SendInput(2, enter_arr, ctypes.sizeof(INPUT))
+    time.sleep(0.12)
     return True
 
 
@@ -3526,11 +3611,21 @@ def run_gui() -> None:
             root.update()
         except Exception:
             pass
-        # Hand off foreground focus to Antigravity BEFORE withdrawing our GUI window
+        # Move window off-screen while retaining Win32 foreground ownership so zero occlusion can occur
+        saved_geom = root.geometry()
+        try:
+            root.geometry("+20000+20000")
+            root.update_idletasks()
+        except Exception:
+            pass
         opened = auto_open_in_antigravity(res["search_token"], surface=res_surface, new_cid=res["new_cid"])
         root.withdraw()
-        root.update()
+        root.update_idletasks()
         if not opened:
+            try:
+                root.geometry(saved_geom)
+            except Exception:
+                pass
             root.deiconify()
             if res_surface == "cli":
                 messagebox.showinfo(
@@ -3541,7 +3636,7 @@ def run_gui() -> None:
             else:
                 messagebox.showinfo(
                     "分支已创建",
-                    f"已成功创建分支：{res['new_title']}\n\n它已实时出现在 Antigravity 会话列表最上方（跳转链接也已复制到剪贴板），点击即可直接继续聊天！",
+                    f"已成功创建分支：{res['new_title']}\n\n请在 Antigravity 左上角搜索框粘贴或搜索标题打开（跳转链接已复制到剪贴板）。",
                     parent=root,
                 )
         root.destroy()
@@ -3838,11 +3933,26 @@ def run_gui() -> None:
         proj_combo.pack(fill="x", pady=(S(4), S(10)))
 
         # Optional local workspace directory remap
-        tk.Label(body, text="本地工作区路径重映射（可选，协作同一代码库时选择你的本地目录）：", font=f_sec_hdr, bg=C_BG_APP, fg=C_TEXT_SEC, anchor="w").pack(fill="x")
+        tk.Label(body, text="本地工作区路径重映射（选定项目时自动带出目录，也可手动修改）：", font=f_sec_hdr, bg=C_BG_APP, fg=C_TEXT_SEC, anchor="w").pack(fill="x")
         ws_row = tk.Frame(body, bg=C_BG_APP)
         ws_row.pack(fill="x", pady=(S(4), S(14)))
         ws_var = tk.StringVar(value="")
         tk.Entry(ws_row, textvariable=ws_var, font=f_item, bg=C_BG_CARD, fg=C_TEXT_PRI, relief="solid", bd=1).pack(side="left", fill="x", expand=True, ipady=S(5))
+        last_auto_ws = [""]
+
+        def _on_proj_selected(_e: object = None) -> None:
+            sel_label = proj_combo_var.get()
+            pid_sel = next((pid for lbl, pid in proj_choices if lbl == sel_label), "outside-of-project")
+            cur_ws = ws_var.get().strip()
+            # Only overwrite ws_var if it's currently empty or still holds the previous auto-filled value
+            if cur_ws and cur_ws != last_auto_ws[0]:
+                return
+            uris = load_project_folder_uris(pid_sel)
+            auto_p = sc_mod.file_uri_to_local_path(uris[0]) if uris else ""
+            last_auto_ws[0] = auto_p
+            ws_var.set(auto_p)
+
+        proj_combo.bind("<<ComboboxSelected>>", _on_proj_selected)
 
         def _pick_ws() -> None:
             chosen = filedialog.askdirectory(parent=dlg, title="选择对应的本地代码仓库目录")
@@ -3887,24 +3997,41 @@ def run_gui() -> None:
                 messagebox.showerror("导入失败", str(exc), parent=dlg)
                 return
 
-            dlg.destroy()
-            reload_conversations()
             try:
                 root.clipboard_clear()
                 root.clipboard_append(res["link"])
-                root.update()
+                root.update_idletasks()
             except Exception:
                 pass
+
+            # Release modal grab & park root off-screen BEFORE Win32 handoff so nothing occludes Antigravity's toolbar
+            saved_geom = root.geometry()
+            try:
+                dlg.grab_release()
+            except Exception:
+                pass
+            dlg.withdraw()
+            try:
+                root.geometry("+20000+20000")
+                root.update_idletasks()
+            except Exception:
+                pass
+
             opened = auto_open_in_antigravity(res["search_token"], surface="app", new_cid=res["new_cid"])
+            dlg.destroy()
             root.withdraw()
-            root.update()
+            root.update_idletasks()
             if not opened:
+                try:
+                    root.geometry(saved_geom)
+                except Exception:
+                    pass
                 root.deiconify()
                 messagebox.showinfo(
                     "导入成功",
                     f"已成功导入对话：{res['new_title']}\n"
                     f"（同步迁移子对话：{res.get('imported_children', 0)} 个）\n\n"
-                    "它已实时出现在 Antigravity 会话列表最上方（跳转链接也已复制到剪贴板），点击即可直接续聊！",
+                    f"请在 Antigravity 左上角 🔍 搜索框输入或粘贴标题打开（搜索码 {res['search_token']} 或标题均可秒搜，跳转链接也已复制到剪贴板）！",
                     parent=root,
                 )
             root.destroy()

@@ -334,6 +334,22 @@ def path_to_file_uri(path_str: str) -> str:
     return f"file://{quote(s, safe='/')}"
 
 
+def file_uri_to_local_path(uri: str) -> str:
+    """Convert an Antigravity `file:///` URI into a native local filesystem path string."""
+    u = str(uri or "").strip()
+    if not u:
+        return ""
+    parsed = urlparse(u)
+    if parsed.scheme != "file":
+        return u
+    raw_p = unquote(parsed.path)
+    if re.match(r"^/[A-Za-z]:/", raw_p):
+        drive = raw_p[1].upper()
+        rest = raw_p[2:]
+        return f"{drive}:{rest.replace('/', os.sep)}"
+    return raw_p if os.sep == "/" else raw_p.replace("/", os.sep)
+
+
 def file_uri_to_native_candidates(uri: str) -> list[str]:
     """Return all path spellings (Windows backslash, slash, lowercase drive, URI) for a `file:///` URI."""
     out: list[str] = []
@@ -623,6 +639,63 @@ def collect_conversation_tree(
     }
 
 
+def _make_workspace_info_pb(uri: str) -> bytes:
+    return bc.serialize_pb_fields([(1, 2, uri.encode("utf-8")), (3, 2, b"")])
+
+
+def _rebuild_trajectory_metadata_pb(
+    blob: bytes,
+    *,
+    new_cid: str | None = None,
+    target_pid: str | None = None,
+    ws_uris: list[str] | None = None,
+) -> bytes:
+    """Normalize `trajectory_metadata_blob` (and `raw_summary` field 17) workspace & project bindings."""
+    if not blob:
+        return blob
+    parsed = _try_parse_pb_strict(blob)
+    if parsed is None:
+        return blob
+
+    out_fields: list[tuple[int, int, int | bytes]] = []
+    if ws_uris is not None:
+        for u in ws_uris:
+            if u:
+                out_fields.append((1, 2, _make_workspace_info_pb(u)))
+
+    saw_cid = False
+    for fnum, wtype, val in parsed:
+        if ws_uris is not None and fnum in (1, 7):
+            continue
+        if target_pid is not None and fnum == 18:
+            continue
+        if new_cid is not None and fnum == 6 and wtype == 2:
+            out_fields.append((6, 2, new_cid.encode("ascii")))
+            saw_cid = True
+            if ws_uris is not None:
+                for u in ws_uris:
+                    if u:
+                        out_fields.append((7, 2, u.encode("utf-8")))
+            continue
+        out_fields.append((fnum, wtype, val))
+
+    if new_cid is not None and not saw_cid:
+        out_fields.append((6, 2, new_cid.encode("ascii")))
+        if ws_uris is not None:
+            for u in ws_uris:
+                if u:
+                    out_fields.append((7, 2, u.encode("utf-8")))
+    elif new_cid is None and ws_uris is not None:
+        for u in ws_uris:
+            if u:
+                out_fields.append((7, 2, u.encode("utf-8")))
+
+    if target_pid is not None:
+        out_fields.append((18, 2, target_pid.encode("utf-8")))
+
+    return bc.serialize_pb_fields(out_fields)
+
+
 def _rewrite_sqlite_db(
     db_path: Path,
     *,
@@ -632,6 +705,8 @@ def _rewrite_sqlite_db(
     cutoff_count: int | None = None,
     new_tid: str | None = None,
     new_cid: str | None = None,
+    target_pid: str | None = None,
+    ws_uris: list[str] | None = None,
 ) -> tuple[int, int, int]:
     """
     Rewrites UUIDs and paths safely across all tables of a conversation `.db` using
@@ -689,6 +764,13 @@ def _rewrite_sqlite_db(
                     data, exact_reps=exact_reps, ci_reps=ci_reps, redact_secrets=redact_secrets
                 )
                 total_redactions += nred
+                if tbl == "trajectory_metadata_blob" and nb and (target_pid is not None or ws_uris is not None):
+                    nb = _rebuild_trajectory_metadata_pb(
+                        nb,
+                        new_cid=new_cid,
+                        target_pid=target_pid,
+                        ws_uris=ws_uris,
+                    )
                 if nb != data:
                     conn.execute(f"UPDATE [{tbl}] SET data=? WHERE [{pk_col}]=?", (nb, pk))
 
@@ -1389,12 +1471,15 @@ def _rebuild_raw_summary_for_import(
     raw: bytes,
     *,
     exact_reps: list[tuple[str, str]],
+    new_cid: str,
     new_tid: str,
     new_title: str,
     new_step_count: int,
     new_last_user_idx: int,
     now_ns: int,
     keep_side_questions: bool,
+    target_pid: str,
+    ws_uris: list[str],
 ) -> bytes:
     if not raw:
         return b""
@@ -1410,6 +1495,7 @@ def _rebuild_raw_summary_for_import(
     new_fields: list[tuple[int, int, int | bytes]] = []
     saw_title = False
     saw_status = False
+    inserted_ws_f9 = False
 
     for fnum, wtype, val in bc.parse_pb_fields(base_bytes):
         if fnum == 1 and wtype == 2:
@@ -1424,6 +1510,12 @@ def _rebuild_raw_summary_for_import(
         elif fnum == 5 and wtype == 0:
             new_fields.append((5, 0, 1))  # CASCADE_RUN_STATUS_IDLE
             saw_status = True
+        elif fnum == 9 and wtype == 2:
+            if not inserted_ws_f9:
+                for u in ws_uris:
+                    if u:
+                        new_fields.append((9, 2, _make_workspace_info_pb(u)))
+                inserted_ws_f9 = True
         elif fnum == 15 and wtype == 2 and isinstance(val, bytes):
             sub_fields: list[tuple[int, int, int | bytes]] = [(1, 2, title_b), (7, 2, now_ts)]
             if keep_side_questions:
@@ -1434,11 +1526,33 @@ def _rebuild_raw_summary_for_import(
             new_fields.append((15, 2, bc.serialize_pb_fields(sub_fields)))
         elif fnum == 16 and wtype == 0:
             new_fields.append((16, 0, max(0, new_last_user_idx)))
+        elif fnum == 17 and wtype == 2 and isinstance(val, bytes):
+            if not inserted_ws_f9 and ws_uris:
+                for u in ws_uris:
+                    if u:
+                        new_fields.append((9, 2, _make_workspace_info_pb(u)))
+                inserted_ws_f9 = True
+            new_fields.append(
+                (
+                    17,
+                    2,
+                    _rebuild_trajectory_metadata_pb(
+                        val,
+                        new_cid=new_cid,
+                        target_pid=target_pid,
+                        ws_uris=ws_uris,
+                    ),
+                )
+            )
         elif fnum == 29 and wtype == 0:
             continue
         else:
             new_fields.append((fnum, wtype, val))
 
+    if not inserted_ws_f9 and ws_uris:
+        for u in ws_uris:
+            if u:
+                new_fields.append((9, 2, _make_workspace_info_pb(u)))
     if not saw_title:
         new_fields.insert(0, (1, 2, title_b))
     if not saw_status:
@@ -1467,14 +1581,29 @@ def import_share_bundle(
 
     root_dir = agy_root or bc.AGY_ROOT
     home_val: Path | str = target_home if target_home is not None else Path.home()
+    target_pid = (project_id or "").strip() or "outside-of-project"
+
+    ws_uris_list: list[str] = []
     if workspace_path is not None:
         ws_raw = str(workspace_path)
         ws_val: Path | str | None = ws_raw if ws_raw.startswith("/") else Path(ws_raw).expanduser().resolve()
         ws_uri = path_to_file_uri(str(ws_val))
+        ws_uris_list = [ws_uri]
+    elif target_pid != "outside-of-project":
+        # Auto-resolve target project's configured folderUri(s) when --workspace was not manually specified
+        proj_dir_override = (root_dir.parent / "config" / "projects") if agy_root is not None else None
+        proj_uris = bc.load_project_folder_uris(target_pid, projects_dir=proj_dir_override)
+        if proj_uris:
+            ws_uris_list = list(proj_uris)
+            ws_uri = proj_uris[0]
+            local_p = file_uri_to_local_path(ws_uri)
+            ws_val = local_p if local_p else None
+        else:
+            ws_val = None
+            ws_uri = ""
     else:
         ws_val = None
         ws_uri = ""
-    target_pid = (project_id or "").strip() or "outside-of-project"
 
     with tempfile.TemporaryDirectory(prefix="agyshare_import_") as tmp_s:
         tmp_dir = Path(tmp_s)
@@ -1579,6 +1708,8 @@ def import_share_bundle(
                 redact_secrets=False,
                 new_tid=ntid,
                 new_cid=nc,
+                target_pid=target_pid,
+                ws_uris=ws_uris_list,
             )
             new_step_counts[nc] = (steps_cnt, last_u)
 
@@ -1652,6 +1783,8 @@ def import_share_bundle(
                     [row_dict[c] for c in use_cols],
                 )
 
+            ws_uris_json = json.dumps(ws_uris_list) if ws_uris_list else ("" if target_pid == "outside-of-project" else "[]")
+
             root_steps, root_last_u = new_step_counts.get(new_root_cid, (int(root_sum_raw.get("step_count") or 0), -1))
             root_row = dict(root_sum_raw)
             root_row["conversation_id"] = new_root_cid
@@ -1661,7 +1794,7 @@ def import_share_bundle(
             root_row["last_modified_time"] = now_iso
             root_row["status"] = "CASCADE_RUN_STATUS_IDLE"
             root_row["project_id"] = target_pid
-            root_row["workspace_uris"] = json.dumps([ws_uri] if ws_uri else [])
+            root_row["workspace_uris"] = ws_uris_json
             root_row["not_fully_idle"] = 0
             root_row["killed"] = 0
             root_row["parent_conversation_id"] = ""
@@ -1670,12 +1803,15 @@ def import_share_bundle(
             root_row["raw_summary"] = _rebuild_raw_summary_for_import(
                 root_sum_raw.get("raw_summary") or b"",
                 exact_reps=all_exact_reps,
+                new_cid=new_root_cid,
                 new_tid=new_tids_by_cid.get(new_root_cid, str(uuid.uuid4())),
                 new_title=new_title,
                 new_step_count=root_steps,
                 new_last_user_idx=root_last_u,
                 now_ns=now_ns,
                 keep_side_questions=include_swarm,
+                target_pid=target_pid,
+                ws_uris=ws_uris_list,
             )
             _insert_summary(root_row)
 
@@ -1696,18 +1832,21 @@ def import_share_bundle(
                 csum["last_modified_time"] = now_iso
                 csum["status"] = "CASCADE_RUN_STATUS_IDLE"
                 csum["project_id"] = target_pid
-                csum["workspace_uris"] = json.dumps([ws_uri] if ws_uri else [])
+                csum["workspace_uris"] = ws_uris_json
                 csum["not_fully_idle"] = 0
                 csum["last_user_input_step_index"] = c_last_u
                 csum["raw_summary"] = _rebuild_raw_summary_for_import(
                     csum.get("raw_summary") or b"",
                     exact_reps=all_exact_reps,
+                    new_cid=nc,
                     new_tid=new_tids_by_cid.get(nc, str(uuid.uuid4())),
                     new_title=str(csum.get("title") or ch.get("agent_name") or ""),
                     new_step_count=c_steps,
                     new_last_user_idx=c_last_u,
                     now_ns=now_ns,
                     keep_side_questions=False,
+                    target_pid=target_pid,
+                    ws_uris=ws_uris_list,
                 )
                 _insert_summary(csum)
                 imported_children_count += 1
@@ -1723,8 +1862,10 @@ def import_share_bundle(
             # Insert FTS5 entries so sidebar & search find the imported conversation immediately without restart
             fts_cols = [r[1] for r in sconn.execute("PRAGMA table_info(conversations_fts)").fetchall()]
             if fts_cols:
-                pmap = bc.load_projects_map()
+                proj_dir_override = (root_dir.parent / "config" / "projects") if agy_root is not None else None
+                pmap = bc.load_projects_map(projects_dir=proj_dir_override)
                 proj_label = pmap.get(target_pid, "") if target_pid != "outside-of-project" else ""
+                ws_label = Path(str(ws_val)).name if ws_val is not None else proj_label
                 fts_cl = ",".join(fts_cols)
                 fts_qm = ",".join("?" for _ in fts_cols)
                 inserted_meta = False
@@ -1734,6 +1875,7 @@ def import_share_bundle(
                     fd = dict(frow)
                     cidx = int(fd.get("chunk_index", 0))
                     fd["conversation_id"] = new_root_cid
+                    fd["archived"] = 0
                     for tk in ("title", "workspace", "project", "user_body", "agent_body"):
                         if isinstance(fd.get(tk), str) and fd[tk]:
                             fd[tk], _ = apply_text_replacements(fd[tk], all_exact_reps)
@@ -1741,9 +1883,8 @@ def import_share_bundle(
                         fd["last_modified_time"] = now_ns
                         fd["step_count"] = root_steps
                         fd["last_step_created_at"] = now_ns
-                        fd["archived"] = 0
                         fd["title"] = new_title
-                        fd["workspace"] = proj_label
+                        fd["workspace"] = ws_label
                         fd["project"] = proj_label
                         inserted_meta = True
                     elif not inserted_token:
@@ -1767,7 +1908,7 @@ def import_share_bundle(
                         "user_step_byte_offsets": None,
                         "agent_step_byte_offsets": None,
                         "title": new_title,
-                        "workspace": proj_label,
+                        "workspace": ws_label,
                         "project": proj_label,
                         "user_body": "",
                         "agent_body": "",
@@ -1800,6 +1941,10 @@ def import_share_bundle(
                     )
 
             sconn.commit()
+            try:
+                sconn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception:
+                pass
         finally:
             sconn.close()
 
@@ -1845,7 +1990,19 @@ def main() -> int:
     p_imp.add_argument("--title", dest="custom_title", help="Custom title for imported conversation")
     p_imp.add_argument("--project", dest="project_id", help="Bind to a local project ID or name")
     p_imp.add_argument("--workspace", dest="workspace", help="Remap workspace paths to this local folder")
-    p_imp.add_argument("--open", action="store_true", help="Automatically open the imported conversation in Antigravity")
+    p_imp.add_argument(
+        "--open",
+        dest="auto_open",
+        action="store_true",
+        default=True,
+        help="Automatically open the imported conversation in Antigravity (default: enabled)",
+    )
+    p_imp.add_argument(
+        "--no-open",
+        dest="auto_open",
+        action="store_false",
+        help="Import silently on disk without triggering UI auto-open",
+    )
     p_imp.add_argument("--agy-root", help="Override ~/.gemini/antigravity directory (for testing)")
 
     args = parser.parse_args()
@@ -1902,8 +2059,10 @@ def main() -> int:
             workspace_path=Path(args.workspace) if args.workspace else None,
             agy_root=agy_root,
         )
-        if args.open and agy_root is None:
-            bc.auto_open_in_antigravity(res["search_token"], surface="app", new_cid=res["new_cid"])
+        opened = False
+        if args.auto_open and agy_root is None:
+            opened = bc.auto_open_in_antigravity(res["search_token"], surface="app", new_cid=res["new_cid"])
+        res["auto_opened"] = opened
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
 
