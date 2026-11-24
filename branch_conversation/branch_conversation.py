@@ -269,7 +269,12 @@ def load_project_folder_uris(project_id: str, projects_dir: Path | None = None) 
             resources = (data.get("projectResources") or {}).get("resources") or []
             for item in resources:
                 if isinstance(item, dict):
-                    furi = str(item.get("folderUri") or "").strip()
+                    git_folder = item.get("gitFolder")
+                    furi = str(
+                        item.get("folderUri")
+                        or (git_folder.get("folderUri") if isinstance(git_folder, dict) else "")
+                        or ""
+                    ).strip()
                     if furi and furi not in uris:
                         uris.append(furi)
             break

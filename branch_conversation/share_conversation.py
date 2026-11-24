@@ -155,9 +155,139 @@ def _try_parse_pb_strict(buf: bytes) -> list[tuple[int, int, int | bytes]] | Non
 def _is_clean_text_str(s: str) -> bool:
     for ch in s:
         o = ord(ch)
-        if o < 32 and ch not in ("\n", "\r", "\t"):
+        if (o < 32 and ch not in ("\n", "\r", "\t")) or o == 127:
             return False
     return True
+
+
+# Schema paths that are guaranteed single-string wrapper submessages (`{1: string}`) in Cortex steps
+_LEGACY_SINGLE_STR_SUBMSG_PATHS: frozenset[str] = frozenset(
+    {
+        "render_info.f9",
+        "render_info.f9.f2",
+        "step_payload.f114.f4.f10",
+        "step_payload.f140.f2.f3.f9",
+        "step_payload.f140.f2.f3.f9.f2",
+        "step_payload.f140.f2.f3.f10",
+    }
+)
+
+
+def _is_genuine_pb_submsg(
+    val: bytes,
+    sub_parsed: list[tuple[int, int, int | bytes]],
+    *,
+    is_any_payload: bool = False,
+    field_path: str = "",
+) -> bool:
+    """
+    Accurately distinguish true nested Protobuf submessages from plain UTF-8 text lines
+    that coincidentally satisfy wire-level framing:
+    - Always true for `google.protobuf.Any.value` and known Cortex wrapper submessage paths.
+    - Requires canonical varint serialization (`serialize_pb_fields(sub_parsed) == val`),
+      valid field numbers (`1..2048`), consistent wire types per field number, and no
+      repeated unpacked scalar fields (`wtype in (0, 1, 5)`).
+    - Rejects indented source code lines starting with ASCII space (`0x20`) and pure
+      printable-ASCII strings that would require non-message scalar wire types or out-of-order tags.
+    """
+    if is_any_payload or field_path in _LEGACY_SINGLE_STR_SUBMSG_PATHS:
+        return True
+    if not any(wt == 2 for _, wt, _ in sub_parsed):
+        return False
+    if bc.serialize_pb_fields(sub_parsed) != val:
+        return False
+
+    wtypes_by_fn: dict[int, int] = {}
+    scalar_seen: set[int] = set()
+    for fn, wt, _ in sub_parsed:
+        if fn <= 0 or fn > 2048:
+            return False
+        prev_wt = wtypes_by_fn.get(fn)
+        if prev_wt is not None and prev_wt != wt:
+            return False
+        wtypes_by_fn[fn] = wt
+        if wt in (0, 1, 5):
+            if fn in scalar_seen:
+                return False
+            scalar_seen.add(fn)
+
+    if val[0] == 0x20:
+        try:
+            s = val.decode("utf-8")
+            if _is_clean_text_str(s):
+                return False
+        except UnicodeDecodeError:
+            pass
+
+    if all(32 <= b < 127 for b in val):
+        prev_fn = 0
+        for fn, wt, _ in sub_parsed:
+            if wt != 2 or fn < prev_fn:
+                return False
+            prev_fn = fn
+
+    return True
+
+
+def _repair_legacy_corrupted_pb_submsg(
+    blob: bytes,
+    *,
+    field_path: str = "",
+    any_type_url: str = "",
+) -> bytes | None:
+    """
+    Reconstruct inner varint length prefixes for submessages exported by older versions
+    of `share_conversation.py` where `\n`/`\t` tag/length bytes caused raw string replacement.
+    """
+    if not blob:
+        return None
+
+    # 1. Legacy `exa.cortex.core.tools.RunCommand` Any payload:
+    #    field 5 (0x2a) shell + field 6 (0x32) command + optional field 7 (0x3a) cwd
+    if any_type_url.endswith(".RunCommand") and blob[0] == 0x2A:
+        try:
+            shell_len, pos = bc.decode_varint(blob, 1)
+            if 0 < shell_len <= 64 and pos + shell_len < len(blob) and blob[pos + shell_len] == 0x32:
+                shell_bytes = blob[pos : pos + shell_len]
+                pos += shell_len + 1  # skip 0x32 tag
+                _old_cmd_len, pos_after_cmd_len = bc.decode_varint(blob, pos)
+                rest = blob[pos_after_cmd_len:]
+
+                idx_colon = rest.rfind(b":")
+                while idx_colon != -1:
+                    try:
+                        _old_cwd_len, after_cwd_len = bc.decode_varint(rest, idx_colon + 1)
+                        cwd_bytes = rest[after_cwd_len:]
+                        if (
+                            cwd_bytes.startswith((b"{{AGY_", b"/"))
+                            or (len(cwd_bytes) >= 3 and cwd_bytes[1:3] in (b":\\", b":/"))
+                        ):
+                            cmd_bytes = rest[:idx_colon]
+                            cmd_bytes.decode("utf-8")
+                            cwd_bytes.decode("utf-8")
+                            return bc.serialize_pb_fields(
+                                [(5, 2, shell_bytes), (6, 2, cmd_bytes), (7, 2, cwd_bytes)]
+                            )
+                    except Exception:
+                        pass
+                    idx_colon = rest.rfind(b":", 0, idx_colon)
+
+                rest.decode("utf-8")
+                return bc.serialize_pb_fields([(5, 2, shell_bytes), (6, 2, rest)])
+        except Exception:
+            return None
+
+    # 2. Legacy single-field `{1: string}` wrapper submessage (`0x0a` + stale varint + UTF-8 string)
+    if field_path in _LEGACY_SINGLE_STR_SUBMSG_PATHS and blob[0] == 0x0A:
+        try:
+            _old_str_len, pos_after_len = bc.decode_varint(blob, 1)
+            str_bytes = blob[pos_after_len:]
+            str_bytes.decode("utf-8")
+            return bc.serialize_pb_fields([(1, 2, str_bytes)])
+        except Exception:
+            return None
+
+    return None
 
 
 def apply_text_replacements(
@@ -220,7 +350,9 @@ def rewrite_pb_blob(
     exact_reps: list[tuple[str, str]],
     ci_reps: list[tuple[str, str]] | None = None,
     redact_secrets: bool = False,
+    repair_legacy: bool = False,
     _depth: int = 0,
+    _path: str = "",
     _exact_needles: list[bytes] | None = None,
     _ci_needles: list[bytes] | None = None,
 ) -> tuple[bytes | None, int]:
@@ -237,12 +369,23 @@ def rewrite_pb_blob(
     if _ci_needles is None:
         _ci_needles = [o.lower().encode("utf-8") for o, n in (ci_reps or []) if o and o.lower() != n.lower()]
 
-    if not _blob_might_match(blob, _exact_needles, _ci_needles, redact_secrets):
+    if not repair_legacy and not _blob_might_match(blob, _exact_needles, _ci_needles, redact_secrets):
         return blob, 0
 
     fields = _try_parse_pb_strict(blob)
     if fields is None:
         return blob, 0
+
+    is_any_msg = (
+        len(fields) == 2
+        and fields[0][0] == 1
+        and fields[0][1] == 2
+        and fields[1][0] == 2
+        and fields[1][1] == 2
+        and isinstance(fields[0][2], bytes)
+        and (b"googleapis.com/" in fields[0][2] or b"exa." in fields[0][2])
+    )
+    any_type_url = fields[0][2].decode("utf-8", errors="ignore") if is_any_msg and isinstance(fields[0][2], bytes) else ""
 
     changed = False
     total_redacted = 0
@@ -253,54 +396,61 @@ def rewrite_pb_blob(
             new_fields.append((fnum, wtype, val))
             continue
 
-        if not _blob_might_match(val, _exact_needles, _ci_needles, redact_secrets):
+        child_path = f"{_path}.f{fnum}" if _path else f"f{fnum}"
+        child_is_any_val = is_any_msg and fnum == 2
+
+        if not repair_legacy and not _blob_might_match(val, _exact_needles, _ci_needles, redact_secrets):
             new_fields.append((fnum, wtype, val))
             continue
 
-        # Try parsing as a nested protobuf submessage first when plausible
-        sub_parsed = _try_parse_pb_strict(val)
-        replaced_val: bytes | None = None
-        if sub_parsed is not None:
-            # Guard against plain ASCII strings that coincidentally parse as protobuf
-            is_likely_submsg = True
-            try:
-                decoded_chk = val.decode("utf-8")
-                if _is_clean_text_str(decoded_chk) and (
-                    "://" in decoded_chk
-                    or ":\\" in decoded_chk
-                    or "/" in decoded_chk
-                    or " " in decoded_chk
-                    or "\n" in decoded_chk
-                    or decoded_chk.startswith("{")
-                ):
-                    is_likely_submsg = False
-            except UnicodeDecodeError:
-                is_likely_submsg = True
+        work_val = val
+        repaired_legacy = False
+        sub_parsed = _try_parse_pb_strict(work_val)
+        if sub_parsed is None and repair_legacy:
+            healed = _repair_legacy_corrupted_pb_submsg(
+                work_val,
+                field_path=child_path,
+                any_type_url=any_type_url if child_is_any_val else "",
+            )
+            if healed is not None:
+                work_val = healed
+                repaired_legacy = True
+                sub_parsed = _try_parse_pb_strict(work_val)
 
-            if is_likely_submsg:
-                sub_new, sub_red = rewrite_pb_blob(
-                    val,
-                    exact_reps=exact_reps,
-                    ci_reps=ci_reps,
-                    redact_secrets=redact_secrets,
-                    _depth=_depth + 1,
-                    _exact_needles=_exact_needles,
-                    _ci_needles=_ci_needles,
-                )
-                if sub_new is not None and sub_new != val:
-                    replaced_val = sub_new
-                    total_redacted += sub_red
+        replaced_val: bytes | None = work_val if repaired_legacy else None
+        is_submsg = sub_parsed is not None and _is_genuine_pb_submsg(
+            work_val,
+            sub_parsed,
+            is_any_payload=child_is_any_val,
+            field_path=child_path,
+        )
 
-        if replaced_val is None:
-            try:
-                s = val.decode("utf-8")
-            except UnicodeDecodeError:
-                s = None
-            if s is not None and _is_clean_text_str(s):
-                ns, nred = apply_text_replacements(s, exact_reps, ci_reps, redact_secrets)
-                if ns != s:
-                    replaced_val = ns.encode("utf-8")
-                    total_redacted += nred
+        if is_submsg:
+            sub_new, sub_red = rewrite_pb_blob(
+                work_val,
+                exact_reps=exact_reps,
+                ci_reps=ci_reps,
+                redact_secrets=redact_secrets,
+                repair_legacy=repair_legacy,
+                _depth=_depth + 1,
+                _path=child_path,
+                _exact_needles=_exact_needles,
+                _ci_needles=_ci_needles,
+            )
+            if sub_new is not None and sub_new != work_val:
+                replaced_val = sub_new
+                total_redacted += sub_red
+        else:
+            if _blob_might_match(work_val, _exact_needles, _ci_needles, redact_secrets):
+                try:
+                    s = work_val.decode("utf-8")
+                except UnicodeDecodeError:
+                    s = None
+                if s is not None and _is_clean_text_str(s):
+                    ns, nred = apply_text_replacements(s, exact_reps, ci_reps, redact_secrets)
+                    if ns != s:
+                        replaced_val = ns.encode("utf-8")
+                        total_redacted += nred
 
         if replaced_val is not None and replaced_val != val:
             changed = True
@@ -365,9 +515,9 @@ def file_uri_to_native_candidates(uri: str) -> list[str]:
     if parsed.scheme == "file":
         raw_p = unquote(parsed.path)
         if re.match(r"^/[A-Za-z]:/", raw_p):
-            # Windows URI like file:///e%3A/LJY_V2
-            win_posix = raw_p[1:]  # e:/LJY_V2
-            win_back = win_posix.replace("/", "\\")  # e:\LJY_V2
+            # Windows URI like file:///e%3A/my-project
+            win_posix = raw_p[1:]  # e:/my-project
+            win_back = win_posix.replace("/", "\\")  # e:\my-project
             drive_up = win_posix[0].upper() + win_posix[1:]
             drive_lo = win_posix[0].lower() + win_posix[1:]
             out.extend(
@@ -702,6 +852,7 @@ def _rewrite_sqlite_db(
     exact_reps: list[tuple[str, str]],
     ci_reps: list[tuple[str, str]] | None = None,
     redact_secrets: bool = False,
+    repair_legacy: bool = False,
     cutoff_count: int | None = None,
     new_tid: str | None = None,
     new_cid: str | None = None,
@@ -714,6 +865,7 @@ def _rewrite_sqlite_db(
     """
     conn = sqlite3.connect(db_path, timeout=15.0)
     total_redactions = 0
+    step_col_names = ("metadata", "error_details", "permissions", "task_details", "render_info", "step_payload")
     try:
         if cutoff_count is not None:
             conn.execute("DELETE FROM steps WHERE idx >= ?", (cutoff_count,))
@@ -735,9 +887,14 @@ def _rewrite_sqlite_db(
             cols_in = [meta, err, perm, task_d, rend, payload]
             cols_out = []
             row_changed = False
-            for blob in cols_in:
+            for cname, blob in zip(step_col_names, cols_in):
                 nb, nred = rewrite_pb_blob(
-                    blob, exact_reps=exact_reps, ci_reps=ci_reps, redact_secrets=redact_secrets
+                    blob,
+                    exact_reps=exact_reps,
+                    ci_reps=ci_reps,
+                    redact_secrets=redact_secrets,
+                    repair_legacy=repair_legacy,
+                    _path=cname,
                 )
                 total_redactions += nred
                 if nb != blob:
@@ -761,7 +918,12 @@ def _rewrite_sqlite_db(
                 if not data:
                     continue
                 nb, nred = rewrite_pb_blob(
-                    data, exact_reps=exact_reps, ci_reps=ci_reps, redact_secrets=redact_secrets
+                    data,
+                    exact_reps=exact_reps,
+                    ci_reps=ci_reps,
+                    redact_secrets=redact_secrets,
+                    repair_legacy=repair_legacy,
+                    _path=tbl,
                 )
                 total_redactions += nred
                 if tbl == "trajectory_metadata_blob" and nb and (target_pid is not None or ws_uris is not None):
@@ -1706,6 +1868,7 @@ def import_share_bundle(
                 dst_db,
                 exact_reps=all_exact_reps,
                 redact_secrets=False,
+                repair_legacy=True,
                 new_tid=ntid,
                 new_cid=nc,
                 target_pid=target_pid,
