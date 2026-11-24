@@ -37,7 +37,7 @@
 | :--- | :--- | :--- | :--- |
 | **⚡ 桌面与浏览器极速控制**<br>`computer_use` | 新开空白浏览器丢登录、看屏慢、特殊窗口点不准、抢鼠标控制权 | 直连日常已登录 Chrome/Edge；`~0.1s` 极速看屏 + 微信/游戏本地 OCR；**晃动鼠标瞬间接管**（停手 2 秒自动恢复） | [查看详情](./computer_use/README.md) |
 | **🛡️ 防误关系统托盘守护**<br>`close_guard` | 误点右上角 `✕` 或按 `Alt+F4` 直接杀掉后台运行中的 AI 任务 | 点关闭键自动收进系统托盘，后台对话与终端任务 **100% 不断连**；配备现代圆角托盘悬浮菜单，空闲 `0.0%` CPU，仅点 `彻底退出 (Quit)` 才真正关闭 | [查看详情](./close_guard/README.md) |
-| **🌿 历史对话任意轮次分支**<br>`branch_conversation` | 长对话想从中间某轮换方向探索，却无法保留前文存档 | 现代 Studio 风格可视化“对话时光机”（支持实时搜索、按项目分组、选中轮次完整消息预览），任选历史轮次 `~0.5s` 免重启直达新分支；也支持在对话框一句话让 AI 分叉 | [查看详情](./branch_conversation/README.md) |
+| **🌿 对话分支与跨用户分享**<br>`branch_conversation` | 长对话想从中间某轮分叉探索，或想把对话连同 Swarm 团队发给其他用户无缝续聊 | 现代 Studio 风格可视化工具（搜索、按项目分组、轮次预览、`~0.5s` 免重启开分支）；支持跨系统导出/导入 **`.agyshare`** 分享包（完整迁移 Swarm 成员、子代理与讨论板，自动脱敏本机路径与 API Key）及 Markdown 交接文档 | [查看详情](./branch_conversation/README.md) |
 
 > 💬 **想了解底层原理或进阶配置？** 直接问你的 Agent，或点进表格右侧的模块目录查看详情。
 
@@ -94,9 +94,10 @@ python scripts/doctor.py   # Ubuntu/Linux 若无 python 别名请运行 python3 
 - **唤回与退出**：Windows 左键单击托盘图标唤回窗口（Linux 点击顶栏图标选 `显示 Antigravity 窗口` 或按鼠标中键）；右键托盘唤起现代悬浮卡片，点 **`彻底退出 Antigravity (Quit)`** 才会真正关闭。
 - **一键卸载**：Windows 运行 `powershell -ExecutionPolicy Bypass -File .\close_guard\uninstall_close_guard.ps1`；Linux 运行 `bash ./close_guard/uninstall_close_guard.sh`。
 
-### 🌿 历史对话任意轮次分支（`branch_conversation` · [模块文档](./branch_conversation/README.md)）
+### 🌿 对话分支与跨用户分享（`branch_conversation` · [模块文档](./branch_conversation/README.md)）
 - **随手分叉**：右键系统托盘图标点 **`对话分支克隆...`** 打开现代 Studio 可视化窗口（支持搜索对话、查看完整轮次内容并一键跳进新对话）；或直接在聊天框对 Agent 说 *“把当前对话克隆到第 5 轮”*；也可运行 `~/mcp-gui-workspace/antigravity-branch/branch_conversation.py --gui`。
-- **一键卸载**：Windows 运行 `powershell -ExecutionPolicy Bypass -File .\branch_conversation\uninstall_branch_tool.ps1`；Linux 运行 `bash ./branch_conversation/uninstall_branch_tool.sh`。
+- **跨用户分享与 Swarm 迁移**：在 Studio 窗口右上角点击 **`↗ 导出分享`** / **`↙ 导入分享`**（或直接对 AI 说 *“把当前对话导出为 .agyshare 发给同事”*），一键把主对话及关联的 `/swarm` 团队、子代理和讨论板脱敏打包，发给 Windows / macOS / Linux 上的其他 Antigravity 用户导入续聊。
+- **一键卸载**：Windows 运行 `powershell -ExecutionPolicy Bypass -File .\branch_conversation\uninstall_branch_tool.ps1`；macOS / Linux 运行 `bash ./branch_conversation/uninstall_branch_tool.sh`。
 
 ---
 

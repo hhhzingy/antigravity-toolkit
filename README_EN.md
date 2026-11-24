@@ -37,7 +37,7 @@ Please read https://github.com/hhhzingy/antigravity-toolkit , auto-detect my OS 
 | :--- | :--- | :--- | :--- |
 | **⚡ Faster Desktop & Browser Control**<br>`computer_use` | Blank browsers with lost logins, slow screenshots, unreadable custom apps, mouse lockouts | Controls your already-open, logged-in Chrome/Edge tabs; `~0.1s` screen vision + local OCR; **wiggle your mouse anytime to take back control** (resumes 2s after release) | [Read Guide](./computer_use/README.md) |
 | **🛡️ Close-to-Tray Guard**<br>`close_guard` | Accidentally clicking `X` or pressing `Alt+F4` and killing active AI tasks | Minimizes quietly to the system tray on `X` / `Alt+F4` (`Ctrl+Q` on Linux) so background agents stay **100% alive**; modern Win11 rounded tray flyout menu, `0.0%` idle CPU, exits only via **`Quit`** | [Read Guide](./close_guard/README.md) |
-| **🌿 Visual Conversation Branching**<br>`branch_conversation` | Wanting to explore a new direction from Turn K without losing later turns | Modern Studio "time-machine" UI (live search, project grouping, full turn message preview) that jumps into a branched chat in `~0.5s` with zero restarts—or just ask your Agent in chat to fork for you | [Read Guide](./branch_conversation/README.md) |
+| **🌿 Conversation Branching & Sharing**<br>`branch_conversation` | Wanting to fork from Turn K without losing history, or share a chat (and its Swarm team) with another user to continue seamlessly | Modern Studio UI (live search, project grouping, full turn preview, `~0.5s` zero-restart branching) plus cross-OS **`.agyshare`** export/import (migrates full Swarm teams, subagents & boards with automatic path & secret redaction) and Markdown handoff | [Read Guide](./branch_conversation/README.md) |
 
 > 💬 **Unsure about any detail or option?** Just ask your Agent directly, or open the module guide linked in the table above.
 
@@ -94,9 +94,10 @@ Every module lives inside your user home directory and can be used or removed in
 - **Restore & true quit**: Left-click the Windows tray icon to restore (on Linux, click the top-bar icon -> `显示 Antigravity 窗口` or middle-click); right-click the tray icon and choose **`Quit`** to exit completely.
 - **One-command uninstall**: Windows: `powershell -ExecutionPolicy Bypass -File .\close_guard\uninstall_close_guard.ps1` · Linux: `bash ./close_guard/uninstall_close_guard.sh`.
 
-### 🌿 Visual Conversation Branching (`branch_conversation` · [Module Guide](./branch_conversation/README.md))
+### 🌿 Conversation Branching & Cross-User Sharing (`branch_conversation` · [Module Guide](./branch_conversation/README.md))
 - **Fork a chat anytime**: Right-click the system tray icon and choose **`对话分支克隆...`** (`分支克隆对话 (Branch)...` on Linux) to open the modern Studio branch window (with live search & full turn message preview); tell your Agent *"Clone this conversation up to turn 5"*; or run `~/mcp-gui-workspace/antigravity-branch/branch_conversation.py --gui`.
-- **One-command uninstall**: Windows: `powershell -ExecutionPolicy Bypass -File .\branch_conversation\uninstall_branch_tool.ps1` · Linux: `bash ./branch_conversation/uninstall_branch_tool.sh`.
+- **Share across users & OSes (with Swarm teams)**: Click **`↗ 导出分享`** / **`↙ 导入分享`** in the Studio header (or ask your Agent to export/import `.agyshare` via `share_conversation.py`) to package a conversation along with its Swarm workers, nested subagents, message board, and side questions—automatically sanitizing local paths and API keys so teammates on Windows, macOS, or Linux can import and continue chatting.
+- **One-command uninstall**: Windows: `powershell -ExecutionPolicy Bypass -File .\branch_conversation\uninstall_branch_tool.ps1` · macOS / Linux: `bash ./branch_conversation/uninstall_branch_tool.sh`.
 
 ---
 

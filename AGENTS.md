@@ -25,7 +25,7 @@ Unless the user specifically requested only one module (e.g., *"only install clo
   ```
 
 Both installers **automatically adapt** to the detected environment:
-- **Antigravity 2.0 App & Antigravity IDE**: Configures `~/.gemini/config/mcp_config.json`, global routing rules, system tray / menu-bar close guard, and Studio/CLI conversation branching (with IDE-safe window handling).
+- **Antigravity 2.0 App & Antigravity IDE**: Configures `~/.gemini/config/mcp_config.json`, global routing rules, system tray / menu-bar close guard, and Studio/CLI conversation branching + cross-user `.agyshare` sharing (with Swarm/Subagent migration and IDE-safe window handling).
 - **`agy` CLI (`~/.gemini/antigravity-cli`)**: Automatically syncs MCP server entries into `~/.gemini/antigravity-cli/settings.json` (preserving user preferences), protects active `agy` terminal windows from accidental close (plus `agy-guard` `tmux` persistence on Linux/macOS), and supports branching `agy` CLI transcripts via `branch_conversation.py`.
 - **Headless Linux SSH Servers**: Automatically skips X11-only GUI dependencies and configures headless-ready `chrome-devtools` MCP, `agy-guard` (`tmux` session wrapper), and CLI conversation branching.
 

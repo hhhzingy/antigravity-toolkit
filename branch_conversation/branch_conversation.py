@@ -1679,7 +1679,7 @@ def run_gui() -> None:
     try:
         import tkinter as tk
         import tkinter.font as tkfont
-        from tkinter import messagebox, ttk
+        from tkinter import filedialog, messagebox, ttk
     except ImportError:
         msg = (
             "未检测到图形界面支持库 tkinter。\n"
@@ -2683,13 +2683,16 @@ def run_gui() -> None:
         fg=C_TEXT_MUTED,
     ).pack(side="left", padx=(0, S(10)))
 
-    # Forward placeholder for reload callback
+    # Forward placeholders for header action callbacks
     reload_cb_ref: list = []
+    export_cb_ref: list = []
+    import_cb_ref: list = []
+
     refresh_btn = PillButton(
         hdr_right,
         text="↻  刷新",
         command=lambda: reload_cb_ref[0]() if reload_cb_ref else None,
-        width=92,
+        width=84,
         height=34,
         bg_behind=C_BG_APP,
         fill_normal=C_BG_CARD,
@@ -2701,6 +2704,40 @@ def run_gui() -> None:
         border_hover=C_BORDER_HOVER,
     )
     refresh_btn.pack(side="right")
+
+    import_btn = PillButton(
+        hdr_right,
+        text="↙  导入分享",
+        command=lambda: import_cb_ref[0]() if import_cb_ref else None,
+        width=102,
+        height=34,
+        bg_behind=C_BG_APP,
+        fill_normal=C_BG_CARD,
+        fill_hover=C_BG_HOVER,
+        fill_active="#E5E7EB",
+        fg=C_TEXT_SEC,
+        font_obj=f_item_bold,
+        border_normal=C_BORDER,
+        border_hover=C_BORDER_HOVER,
+    )
+    import_btn.pack(side="right", padx=(0, S(8)))
+
+    export_btn = PillButton(
+        hdr_right,
+        text="↗  导出分享",
+        command=lambda: export_cb_ref[0]() if export_cb_ref else None,
+        width=102,
+        height=34,
+        bg_behind=C_BG_APP,
+        fill_normal=C_BG_CARD,
+        fill_hover=C_BG_HOVER,
+        fill_active="#E5E7EB",
+        fg=C_TEXT_SEC,
+        font_obj=f_item_bold,
+        border_normal=C_BORDER,
+        border_hover=C_BORDER_HOVER,
+    )
+    export_btn.pack(side="right", padx=(0, S(8)))
 
     # ---- 2. Main Split Body (Left Card | Right Card) ----------------------
     split_body = tk.Frame(outer, bg=C_BG_APP)
@@ -3510,6 +3547,400 @@ def run_gui() -> None:
         root.destroy()
 
     do_branch_ref.append(do_branch_and_open)
+
+    # ---- Cross-User Conversation Share (.agyshare / Markdown) Actions -----
+    def _load_share_mod():
+        script_dir = str(Path(__file__).resolve().parent)
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        import share_conversation as sc_mod
+
+        return sc_mod
+
+    def open_export_share_dialog() -> None:
+        if not selected_cid:
+            messagebox.showwarning("提示", "请先在左侧选择要分享的源对话。", parent=root)
+            return
+        convo = convo_by_cid.get(selected_cid) or {}
+        if convo.get("surface") == "cli":
+            messagebox.showinfo(
+                "提示",
+                "当前选中为 agy CLI 终端会话，暂请在桌面端/IDE 对话中使用 .agyshare 打包分享。",
+                parent=root,
+            )
+            return
+
+        try:
+            sc_mod = _load_share_mod()
+        except Exception as exc:
+            messagebox.showerror("缺少组件", f"未找到 share_conversation.py：{exc}", parent=root)
+            return
+
+        sel = turn_tree.selection()
+        sel_turn_num = current_turns[int(sel[0])]["turn"] if sel else None
+        total_t = len(current_turns)
+        is_trunc = bool(sel_turn_num and sel_turn_num < total_t)
+
+        # Read-only check for Swarm workers / Subagents / Side Questions
+        tree_info = {"has_swarm": False, "children": [], "swarm_worker_ids": [], "side_question_ids": []}
+        sum_db_p = AGY_ROOT / "conversation_summaries.db"
+        if sum_db_p.is_file():
+            sconn = sqlite3.connect(f"file:{sum_db_p.as_posix()}?mode=ro", uri=True, timeout=10.0)
+            try:
+                cutoff_v = current_turns[int(sel[0])]["cutoff_count"] if (sel and is_trunc) else None
+                tree_info = sc_mod.collect_conversation_tree(sconn, selected_cid, AGY_ROOT, cutoff_count=cutoff_v)
+            finally:
+                sconn.close()
+
+        child_cnt = len(tree_info["children"])
+        sw_cnt = len(tree_info["swarm_worker_ids"])
+        sq_cnt = len(tree_info["side_question_ids"])
+
+        dlg = tk.Toplevel(root)
+        dlg.title("导出对话分享包 — Antigravity")
+        dlg.configure(bg=C_BG_APP)
+        dlg.transient(root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        dw, dh = S(490), S(350 if child_cnt > 0 else 310)
+        dx = root.winfo_x() + max(20, (root.winfo_width() - dw) // 2)
+        dy = root.winfo_y() + max(20, (root.winfo_height() - dh) // 2)
+        dlg.geometry(f"{dw}x{dh}+{dx}+{dy}")
+
+        body = tk.Frame(dlg, bg=C_BG_APP, padx=S(20), pady=S(16))
+        body.pack(fill="both", expand=True)
+
+        tk.Label(body, text="导出对话分享给其他 Antigravity 用户", font=f_card_hdr, bg=C_BG_APP, fg=C_TEXT_PRI, anchor="w").pack(fill="x")
+        range_lbl = f"第 1 ~ {sel_turn_num} 轮（共 {total_t} 轮）" if is_trunc else f"完整全部 {total_t} 轮"
+        tk.Label(
+            body,
+            text=f"源对话：{convo.get('title') or '(无标题)'}   ·   范围：{range_lbl}",
+            font=f_small,
+            bg=C_BG_APP,
+            fg=C_TEXT_MUTED,
+            anchor="w",
+        ).pack(fill="x", pady=(S(4), S(12)))
+
+        fmt_var = tk.StringVar(value="agyshare")
+        fmt_box = tk.Frame(body, bg=C_BG_CARD, highlightbackground=C_BORDER, highlightthickness=1, padx=S(12), pady=S(10))
+        fmt_box.pack(fill="x", pady=(0, S(10)))
+        tk.Radiobutton(
+            fmt_box,
+            text="原生可续聊分享包 (.agyshare)  — 对方导入后直接原样继续聊",
+            variable=fmt_var,
+            value="agyshare",
+            font=f_item_bold,
+            bg=C_BG_CARD,
+            fg=C_TEXT_PRI,
+            activebackground=C_BG_CARD,
+            anchor="w",
+        ).pack(fill="x")
+        tk.Radiobutton(
+            fmt_box,
+            text="便携接力 Markdown (.md)  — 无需工具，任何 AI 可直接阅读接力",
+            variable=fmt_var,
+            value="md",
+            font=f_item,
+            bg=C_BG_CARD,
+            fg=C_TEXT_SEC,
+            activebackground=C_BG_CARD,
+            anchor="w",
+        ).pack(fill="x", pady=(S(4), 0))
+
+        include_swarm_var = tk.BooleanVar(value=True)
+        redact_var = tk.BooleanVar(value=True)
+
+        opt_box = tk.Frame(body, bg=C_BG_APP)
+        opt_box.pack(fill="x", pady=(S(2), S(12)))
+
+        if child_cnt > 0:
+            detail_parts = []
+            if sw_cnt:
+                detail_parts.append(f"{sw_cnt} 个 Swarm 成员")
+            other_sub = child_cnt - sw_cnt - sq_cnt
+            if other_sub > 0:
+                detail_parts.append(f"{other_sub} 个子代理")
+            if sq_cnt:
+                detail_parts.append(f"{sq_cnt} 个侧边提问")
+            tk.Checkbutton(
+                opt_box,
+                text=f"连带迁移全部子对话（{' / '.join(detail_parts)}，取消勾选则为轻量主对话模式）",
+                variable=include_swarm_var,
+                font=f_item,
+                bg=C_BG_APP,
+                fg=C_TEXT_PRI,
+                activebackground=C_BG_APP,
+                anchor="w",
+                wraplength=S(430),
+                justify="left",
+            ).pack(fill="x", pady=(0, S(4)))
+
+        tk.Checkbutton(
+            opt_box,
+            text="自动匿名化本机路径并扫描脱敏 API Key / Token 等敏感凭据（推荐）",
+            variable=redact_var,
+            font=f_item,
+            bg=C_BG_APP,
+            fg=C_TEXT_SEC,
+            activebackground=C_BG_APP,
+            anchor="w",
+        ).pack(fill="x")
+
+        btn_row = tk.Frame(body, bg=C_BG_APP)
+        btn_row.pack(side="bottom", fill="x")
+
+        def _do_export() -> None:
+            fmt = fmt_var.get()
+            ext = ".agyshare" if fmt == "agyshare" else ".md"
+            ftypes = [("Antigravity 分享包", "*.agyshare")] if fmt == "agyshare" else [("Markdown 文档", "*.md")]
+            def_name = sc_mod._safe_filename(convo.get("title") or "antigravity_chat") + ext
+            save_path = filedialog.asksaveasfilename(
+                parent=dlg,
+                title="保存对话分享包",
+                initialfile=def_name,
+                defaultextension=ext,
+                filetypes=ftypes,
+            )
+            if not save_path:
+                return
+            dlg.configure(cursor="watch")
+            dlg.update()
+            try:
+                if fmt == "md":
+                    res = sc_mod.export_markdown_handoff(
+                        source_cid=selected_cid,
+                        turn_number=sel_turn_num if is_trunc else None,
+                        output_path=Path(save_path),
+                        include_swarm=include_swarm_var.get(),
+                        redact_secrets=redact_var.get(),
+                    )
+                else:
+                    res = sc_mod.export_share_bundle(
+                        source_cid=selected_cid,
+                        turn_number=sel_turn_num if is_trunc else None,
+                        output_path=Path(save_path),
+                        include_swarm=include_swarm_var.get(),
+                        redact_secrets=redact_var.get(),
+                    )
+            except Exception as exc:
+                dlg.configure(cursor="")
+                messagebox.showerror("导出失败", str(exc), parent=dlg)
+                return
+
+            try:
+                root.clipboard_clear()
+                root.clipboard_append(res["output_path"])
+                root.update()
+            except Exception:
+                pass
+            size_mb = res["size_bytes"] / (1024 * 1024)
+            size_str = f"{size_mb:.2f} MB" if size_mb >= 1.0 else f"{res['size_bytes'] / 1024:.1f} KB"
+            extra_child = f"\n包含子对话：{res.get('child_count', 0)} 个（含 Swarm / 子代理 / 侧边提问）" if res.get("child_count") else ""
+            dlg.destroy()
+            messagebox.showinfo(
+                "导出成功",
+                f"对话分享文件已生成（路径已复制到剪贴板）：\n{res['output_path']}\n\n"
+                f"文件大小：{size_str}{extra_child}\n"
+                f"已自动脱敏凭据：{res.get('redacted_secrets', 0)} 处",
+                parent=root,
+            )
+
+        PillButton(
+            btn_row,
+            text="选择保存位置并导出  →",
+            command=_do_export,
+            width=190,
+            height=36,
+            bg_behind=C_BG_APP,
+            fill_normal=C_CTA_BG,
+            fill_hover=C_CTA_HOVER,
+            fill_active=C_CTA_ACTIVE,
+            fg="#FFFFFF",
+            font_obj=f_item_bold,
+        ).pack(side="right")
+
+        PillButton(
+            btn_row,
+            text="取消",
+            command=dlg.destroy,
+            width=76,
+            height=36,
+            bg_behind=C_BG_APP,
+            fill_normal=C_BG_CARD,
+            fill_hover=C_BG_HOVER,
+            fill_active="#E5E7EB",
+            fg=C_TEXT_SEC,
+            font_obj=f_item,
+            border_normal=C_BORDER,
+            border_hover=C_BORDER_HOVER,
+        ).pack(side="right", padx=(0, S(8)))
+
+    def open_import_share_dialog() -> None:
+        try:
+            sc_mod = _load_share_mod()
+        except Exception as exc:
+            messagebox.showerror("缺少组件", f"未找到 share_conversation.py：{exc}", parent=root)
+            return
+
+        bundle_file = filedialog.askopenfilename(
+            parent=root,
+            title="选择他人分享的 Antigravity 对话包 (.agyshare)",
+            filetypes=[("Antigravity 分享包", "*.agyshare"), ("所有文件", "*.*")],
+        )
+        if not bundle_file:
+            return
+
+        try:
+            manifest = sc_mod.inspect_share_bundle(Path(bundle_file))
+        except Exception as exc:
+            messagebox.showerror("无法读取分享包", f"文件不是有效的 .agyshare 对话包：\n{exc}", parent=root)
+            return
+
+        pmap = load_projects_map()
+        proj_choices: list[tuple[str, str]] = [("未归属项目对话（推荐通用）", "outside-of-project")]
+        for pid, pname in sorted(pmap.items(), key=lambda kv: kv[1].lower()):
+            proj_choices.append((f"📁 {pname}", pid))
+
+        dlg = tk.Toplevel(root)
+        dlg.title("导入对话分享包 — Antigravity")
+        dlg.configure(bg=C_BG_APP)
+        dlg.transient(root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        dw, dh = S(520), S(380)
+        dx = root.winfo_x() + max(20, (root.winfo_width() - dw) // 2)
+        dy = root.winfo_y() + max(20, (root.winfo_height() - dh) // 2)
+        dlg.geometry(f"{dw}x{dh}+{dx}+{dy}")
+
+        body = tk.Frame(dlg, bg=C_BG_APP, padx=S(20), pady=S(16))
+        body.pack(fill="both", expand=True)
+
+        tk.Label(body, text=f"准备导入：{manifest.get('title', '未命名对话')}", font=f_card_hdr, bg=C_BG_APP, fg=C_TEXT_PRI, anchor="w").pack(fill="x")
+
+        meta_parts = [f"共 {manifest.get('kept_turns', '?')} 轮 ({manifest.get('step_count', 0)} 步)"]
+        if manifest.get("child_count"):
+            meta_parts.append(f"含 {manifest['child_count']} 个 Swarm/子代理/侧边提问")
+        if manifest.get("workspace_name_hint"):
+            meta_parts.append(f"原项目目录：{manifest['workspace_name_hint']}")
+        tk.Label(body, text="  ·  ".join(meta_parts), font=f_small, bg=C_BG_APP, fg=C_TEXT_MUTED, anchor="w").pack(fill="x", pady=(S(4), S(14)))
+
+        # Custom title
+        tk.Label(body, text="导入后的对话标题（留空则自动附加 [导入]）：", font=f_sec_hdr, bg=C_BG_APP, fg=C_TEXT_SEC, anchor="w").pack(fill="x")
+        imp_title_var = tk.StringVar(value="")
+        tk.Entry(body, textvariable=imp_title_var, font=f_item, bg=C_BG_CARD, fg=C_TEXT_PRI, relief="solid", bd=1).pack(fill="x", pady=(S(4), S(10)), ipady=S(5))
+
+        # Project binding
+        tk.Label(body, text="归属到本机项目：", font=f_sec_hdr, bg=C_BG_APP, fg=C_TEXT_SEC, anchor="w").pack(fill="x")
+        proj_combo_var = tk.StringVar(value=proj_choices[0][0])
+        proj_combo = ttk.Combobox(body, textvariable=proj_combo_var, values=[lbl for lbl, _ in proj_choices], state="readonly", font=f_item)
+        proj_combo.pack(fill="x", pady=(S(4), S(10)))
+
+        # Optional local workspace directory remap
+        tk.Label(body, text="本地工作区路径重映射（可选，协作同一代码库时选择你的本地目录）：", font=f_sec_hdr, bg=C_BG_APP, fg=C_TEXT_SEC, anchor="w").pack(fill="x")
+        ws_row = tk.Frame(body, bg=C_BG_APP)
+        ws_row.pack(fill="x", pady=(S(4), S(14)))
+        ws_var = tk.StringVar(value="")
+        tk.Entry(ws_row, textvariable=ws_var, font=f_item, bg=C_BG_CARD, fg=C_TEXT_PRI, relief="solid", bd=1).pack(side="left", fill="x", expand=True, ipady=S(5))
+
+        def _pick_ws() -> None:
+            chosen = filedialog.askdirectory(parent=dlg, title="选择对应的本地代码仓库目录")
+            if chosen:
+                ws_var.set(chosen)
+
+        PillButton(
+            ws_row,
+            text="浏览...",
+            command=_pick_ws,
+            width=72,
+            height=30,
+            bg_behind=C_BG_APP,
+            fill_normal=C_BG_CARD,
+            fill_hover=C_BG_HOVER,
+            fill_active="#E5E7EB",
+            fg=C_TEXT_SEC,
+            font_obj=f_small_bold,
+            border_normal=C_BORDER,
+            border_hover=C_BORDER_HOVER,
+        ).pack(side="right", padx=(S(8), 0))
+
+        btn_row = tk.Frame(body, bg=C_BG_APP)
+        btn_row.pack(side="bottom", fill="x")
+
+        def _do_import() -> None:
+            sel_label = proj_combo_var.get()
+            pid_chosen = next((pid for lbl, pid in proj_choices if lbl == sel_label), "outside-of-project")
+            ws_p = Path(ws_var.get().strip()) if ws_var.get().strip() else None
+            custom_t = imp_title_var.get().strip() or None
+            dlg.configure(cursor="watch")
+            dlg.update()
+            try:
+                res = sc_mod.import_share_bundle(
+                    Path(bundle_file),
+                    custom_title=custom_t,
+                    project_id=pid_chosen,
+                    workspace_path=ws_p,
+                )
+            except Exception as exc:
+                dlg.configure(cursor="")
+                messagebox.showerror("导入失败", str(exc), parent=dlg)
+                return
+
+            dlg.destroy()
+            reload_conversations()
+            try:
+                root.clipboard_clear()
+                root.clipboard_append(res["link"])
+                root.update()
+            except Exception:
+                pass
+            opened = auto_open_in_antigravity(res["search_token"], surface="app", new_cid=res["new_cid"])
+            root.withdraw()
+            root.update()
+            if not opened:
+                root.deiconify()
+                messagebox.showinfo(
+                    "导入成功",
+                    f"已成功导入对话：{res['new_title']}\n"
+                    f"（同步迁移子对话：{res.get('imported_children', 0)} 个）\n\n"
+                    "它已实时出现在 Antigravity 会话列表最上方（跳转链接也已复制到剪贴板），点击即可直接续聊！",
+                    parent=root,
+                )
+            root.destroy()
+
+        PillButton(
+            btn_row,
+            text="立即导入并打开新对话  →",
+            command=_do_import,
+            width=204,
+            height=36,
+            bg_behind=C_BG_APP,
+            fill_normal=C_CTA_BG,
+            fill_hover=C_CTA_HOVER,
+            fill_active=C_CTA_ACTIVE,
+            fg="#FFFFFF",
+            font_obj=f_item_bold,
+        ).pack(side="right")
+
+        PillButton(
+            btn_row,
+            text="取消",
+            command=dlg.destroy,
+            width=76,
+            height=36,
+            bg_behind=C_BG_APP,
+            fill_normal=C_BG_CARD,
+            fill_hover=C_BG_HOVER,
+            fill_active="#E5E7EB",
+            fg=C_TEXT_SEC,
+            font_obj=f_item,
+            border_normal=C_BORDER,
+            border_hover=C_BORDER_HOVER,
+        ).pack(side="right", padx=(0, S(8)))
+
+    export_cb_ref.append(open_export_share_dialog)
+    import_cb_ref.append(open_import_share_dialog)
 
     # ---- Win32 Real Antigravity Icon + Win11 DWM Rounded Light Chrome -----
     extracted_icons: list[int] = []

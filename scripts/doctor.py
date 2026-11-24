@@ -926,9 +926,11 @@ def check_module_branch_conversation() -> Dict[str, Any]:
     home = Path.home()
     branch_dir = home / "mcp-gui-workspace" / "antigravity-branch"
     branch_script = branch_dir / "branch_conversation.py"
+    share_script = branch_dir / "share_conversation.py"
     skill_md = home / ".gemini" / "config" / "skills" / "branch-conversation" / "SKILL.md"
 
     script_ok = branch_script.is_file()
+    share_ok = share_script.is_file()
     skill_ok = skill_md.is_file()
 
     items = [
@@ -939,7 +941,13 @@ def check_module_branch_conversation() -> Dict[str, Any]:
             "detail": "已部署" if script_ok else "脚本未安装",
         },
         {
-            "label": "全局对话分支 Skill 技能卡",
+            "label": "跨用户对话与 Swarm 分享引擎 (.agyshare / Markdown)",
+            "path": display_path(share_script),
+            "ok": share_ok,
+            "detail": "已部署" if share_ok else "尚未安装（重新运行模块 3 安装即可启用分享/导入）",
+        },
+        {
+            "label": "全局对话分支与分享 Skill 技能卡",
             "path": display_path(skill_md),
             "ok": skill_ok,
             "detail": "已部署" if skill_ok else "SKILL.md 未安装",
@@ -953,7 +961,7 @@ def check_module_branch_conversation() -> Dict[str, Any]:
     return {
         "id": "branch_conversation",
         "index": 3,
-        "name": "历史对话任意轮次分支工具 (Conversation Branching)",
+        "name": "历史对话分支与跨用户分享工具 (Branch & Share)",
         "status": status,
         "items": items,
         "install_command": install_cmd,

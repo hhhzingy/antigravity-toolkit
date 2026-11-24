@@ -48,14 +48,24 @@ if [ ! "$SRC_PY" -ef "$DST_PY" ]; then
 fi
 chmod +x "$DST_PY"
 
+SRC_SHARE_PY="${SCRIPT_DIR}/share_conversation.py"
+DST_SHARE_PY="${BRANCH_DIR}/share_conversation.py"
+if [ -f "$SRC_SHARE_PY" ]; then
+  if [ ! "$SRC_SHARE_PY" -ef "$DST_SHARE_PY" ]; then
+    cp -f "$SRC_SHARE_PY" "$DST_SHARE_PY"
+  fi
+  chmod +x "$DST_SHARE_PY"
+fi
+
 SRC_SKILL="${SCRIPT_DIR}/SKILL.md"
 DST_SKILL="${SKILL_DIR}/SKILL.md"
 if [ ! "$SRC_SKILL" -ef "$DST_SKILL" ]; then
   cp -f "$SRC_SKILL" "$DST_SKILL"
 fi
 
-echo "Antigravity Conversation Brancher & Global Skill installed successfully (App + IDE + agy CLI)!"
-echo " - Tool path : ${DST_PY}"
-echo " - Skill path: ${DST_SKILL}"
-echo " - GUI launch: python3 \"${DST_PY}\" --gui"
-echo " - Chat usage: Ask Antigravity '把当前对话分支一份，忽略最后一条消息'"
+echo "Antigravity Conversation Brancher, Cross-User Sharer & Global Skill installed successfully (App + IDE + agy CLI)!"
+echo " - Branch tool: ${DST_PY}"
+echo " - Share tool : ${DST_SHARE_PY}"
+echo " - Skill path : ${DST_SKILL}"
+echo " - GUI launch : python3 \"${DST_PY}\" --gui"
+echo " - Chat usage : Ask Antigravity '把当前对话分支一份' or '把当前对话导出为 .agyshare 发给同事'"

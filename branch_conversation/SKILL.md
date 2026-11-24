@@ -1,18 +1,24 @@
 ---
 name: branch-conversation
-description: Clone / fork / branch an existing Antigravity conversation (across Antigravity 2.0 App, Antigravity IDE, and `agy` CLI) into a new independent conversation UUID, optionally truncating at any historical chat turn (e.g., full clone, ignore the last N messages, or branch right after Turn #K). Trigger when the user asks to branch, fork, clone, or duplicate a conversation or rewind/branch from an earlier message.
+description: Clone, fork, branch, export, or import an Antigravity conversation (across Antigravity 2.0 App, Antigravity IDE, and `agy` CLI) — including optional turn truncation and cross-user `.agyshare` / Markdown sharing with full Swarm teams, nested Subagents, message boards, and Side Questions. Trigger when the user asks to branch, fork, clone, rewind, export, share, send, or import a conversation or `.agyshare` archive.
 ---
 
-# Branch / Fork Antigravity Conversation (App 2.0 · IDE · `agy` CLI)
+# Branch / Fork & Cross-User Share Antigravity Conversation (App 2.0 · IDE · `agy` CLI)
 
-Use `~/mcp-gui-workspace/antigravity-branch/branch_conversation.py` to clone any Antigravity conversation—whether created in **Antigravity 2.0 Desktop App**, **Antigravity IDE**, or **`agy` CLI** (`~/.gemini/antigravity-cli/`)—at any historical turn without restarting.
+Use the tools in `~/mcp-gui-workspace/antigravity-branch/`:
+- **`branch_conversation.py`**: Local fork/branch at any historical turn `1..N` (without restarting).
+- **`share_conversation.py`**: Cross-user export/inspect/import via portable `.agyshare` archives (supports full **Swarm teams, Subagents, message boards, and Side Questions**, with automatic path rewriting across Windows/macOS/Linux and API-key/secret redaction) or human-readable Markdown handoff (`.md`).
 
-*(Tip: Inside an active `agy` CLI TUI session, if the user only wants an immediate fork from the latest turn, `/fork` is also available natively; for rewinding/branching at any specific historical turn `1..N` or ignoring the last `K` turns, use `branch_conversation.py` below.)*
+*(Tip: Inside an active `agy` CLI TUI session, `/fork` creates an immediate fork from the latest turn; use `branch_conversation.py` to branch from any earlier turn `1..N`, or `share_conversation.py` to export/import `.agyshare` across different users and machines.)*
 
-- **Windows path**: `"$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\branch_conversation.py"`
-- **macOS / Linux path**: `"$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py"`
+- **Windows paths**:
+  - `"$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\branch_conversation.py"`
+  - `"$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\share_conversation.py"`
+- **macOS / Linux paths**:
+  - `"$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py"`
+  - `"$HOME/mcp-gui-workspace/antigravity-branch/share_conversation.py"`
 
-## Commands
+## Part 1: Local Branch / Fork Commands
 
 ### Windows (PowerShell)
 
@@ -37,7 +43,7 @@ Use `~/mcp-gui-workspace/antigravity-branch/branch_conversation.py` to clone any
    python "$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\branch_conversation.py" --id <conversation_id> --turn <N> --open
    ```
 
-5. **Open visual Studio GUI picker**:
+5. **Open visual Studio GUI picker (supports Branch + Export/Import `.agyshare`)**:
    ```powershell
    pythonw "$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\branch_conversation.py" --gui
    ```
@@ -57,6 +63,43 @@ python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --id
 python3 "$HOME/mcp-gui-workspace/antigravity-branch/branch_conversation.py" --gui
 ```
 
+## Part 2: Cross-User Share (`.agyshare` / Markdown) — Includes Swarm & Subagents
+
+`share_conversation.py` reads live SQLite databases in strictly read-only mode (`?mode=ro` + online backup), never interrupts active chats, automatically strips local paths & secrets, and remaps all UUIDs + Swarm state cleanly on import.
+
+### Windows (PowerShell)
+
+```powershell
+# 1. Export full conversation + Swarm team / Subagents / Side Questions -> .agyshare
+python "$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\share_conversation.py" export --id <conversation_id> -o "C:\path\to\handoff.agyshare"
+
+# 2. Lite export (main conversation only, excluding Swarm/Subagents; optionally truncate to Turn N)
+python "$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\share_conversation.py" export --id <conversation_id> --lite --turn 8 -o "C:\path\to\handoff.agyshare"
+
+# 3. Export human-readable Markdown handoff (includes Swarm message board)
+python "$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\share_conversation.py" export --id <conversation_id> --format md -o "C:\path\to\handoff.md"
+
+# 4. Inspect a received .agyshare bundle before importing
+python "$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\share_conversation.py" inspect "C:\path\to\handoff.agyshare"
+
+# 5. Import a received .agyshare bundle into local Antigravity, bind workspace, and auto-open
+python "$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\share_conversation.py" import "C:\path\to\handoff.agyshare" --workspace "C:\path\to\local-repo" --open
+```
+
+### macOS / Linux (Bash)
+
+```bash
+# Export (.agyshare with Swarm / Lite / Markdown)
+python3 "$HOME/mcp-gui-workspace/antigravity-branch/share_conversation.py" export --id <conversation_id> -o ./handoff.agyshare
+python3 "$HOME/mcp-gui-workspace/antigravity-branch/share_conversation.py" export --id <conversation_id> --lite -o ./handoff.agyshare
+python3 "$HOME/mcp-gui-workspace/antigravity-branch/share_conversation.py" export --id <conversation_id> --format md -o ./handoff.md
+
+# Inspect & Import
+python3 "$HOME/mcp-gui-workspace/antigravity-branch/share_conversation.py" inspect ./handoff.agyshare
+python3 "$HOME/mcp-gui-workspace/antigravity-branch/share_conversation.py" import ./handoff.agyshare --workspace /path/to/local-repo --open
+```
+
 ## Output Requirement
-- For **Desktop App / Antigravity IDE** branches: always include the returned clickable markdown link `[<new_title>](conversation://<new_cid>)` directly in your reply so the user can jump straight into the branched conversation in one click.
-- For **`agy` CLI** branches: include the returned `resume_command` (`agy --resume <new_cid>`) so the user can jump straight into the branched CLI session.
+- For **Desktop App / Antigravity IDE** branches or imports: always include the returned clickable markdown link `[<new_title>](conversation://<new_cid>)` directly in your reply so the user can jump straight into the conversation in one click.
+- For **`agy` CLI** branches: include the returned `resume_command` (`agy --resume <new_cid>`).
+- For **`.agyshare` / `.md` exports**: include a clickable file link to the exported archive, report how many Swarm/Subagent/Side Question sessions and secret redactions were processed, and remind the recipient they can import it via Studio GUI (`↙ 导入分享`) or `share_conversation.py import`.
