@@ -32,6 +32,7 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import zlib
@@ -2946,6 +2947,137 @@ def run_gui() -> None:
                         joinstyle=tk.ROUND,
                     )
 
+    # ---- Animated Anti-Aliased Studio Progress Card (Export / Import / Large Ops) ----
+    class StudioProgressBar(tk.Frame):
+        def __init__(self, parent: tk.Widget, *, bg_behind: str = C_BG_APP) -> None:
+            super().__init__(
+                parent,
+                bg=C_BG_SUBTLE,
+                highlightbackground=C_BORDER,
+                highlightcolor=C_BORDER,
+                highlightthickness=1,
+                padx=S(12),
+                pady=S(9),
+            )
+            self._bg_behind = bg_behind
+            self._target_frac = 0.0
+            self._disp_frac = 0.0
+            self._phase = 0.0
+            self._raw_msg = "正在准备..."
+            self._start_ts = time.monotonic()
+
+            hdr = tk.Frame(self, bg=C_BG_SUBTLE)
+            hdr.pack(fill="x", pady=(0, S(6)))
+
+            self._pct_var = tk.StringVar(value="0%  ·  0.0s")
+            self._pct_lbl = tk.Label(
+                hdr,
+                textvariable=self._pct_var,
+                font=f_small_bold,
+                bg=C_BG_SUBTLE,
+                fg=C_ACCENT,
+                anchor="e",
+            )
+            self._pct_lbl.pack(side="right", padx=(S(8), 0))
+
+            self._msg_var = tk.StringVar(value=self._raw_msg)
+            self._msg_lbl = tk.Label(
+                hdr,
+                textvariable=self._msg_var,
+                font=f_small_bold,
+                bg=C_BG_SUBTLE,
+                fg=C_TEXT_PRI,
+                anchor="w",
+            )
+            self._msg_lbl.pack(side="left", fill="x", expand=True)
+
+            self._track = tk.Canvas(
+                self,
+                height=S(10),
+                bg=C_BG_SUBTLE,
+                bd=0,
+                highlightthickness=0,
+                relief="flat",
+            )
+            self._track.pack(fill="x")
+            self._hdr = hdr
+            self._track.bind("<Configure>", lambda _e: self._redraw())
+            hdr.bind("<Configure>", lambda _e: self._sync_msg_label())
+
+        def reset(self, msg: str = "正在准备...") -> None:
+            self._target_frac = 0.02
+            self._disp_frac = 0.02
+            self._phase = 0.0
+            self._raw_msg = msg
+            self._start_ts = time.monotonic()
+            self._sync_labels()
+            self._redraw()
+
+        def set_progress(self, frac: float, msg: str) -> None:
+            self._target_frac = max(0.0, min(1.0, float(frac)))
+            if msg:
+                self._raw_msg = msg
+
+        def tick(self) -> None:
+            # Smooth easing toward target + continuous shimmer motion proving UI is alive
+            diff = self._target_frac - self._disp_frac
+            if abs(diff) < 0.004:
+                self._disp_frac = self._target_frac
+            else:
+                self._disp_frac += diff * 0.25
+            self._phase = (self._phase + 0.032) % 1.0
+            self._sync_labels()
+            self._redraw()
+
+        def _sync_msg_label(self) -> None:
+            avail = max(S(140), self._hdr.winfo_width() - self._pct_lbl.winfo_reqwidth() - S(16))
+            self._msg_var.set(ellipsize(self._raw_msg, f_small_bold, avail))
+
+        def _sync_labels(self) -> None:
+            elapsed = max(0.0, time.monotonic() - self._start_ts)
+            pct = int(round(self._disp_frac * 100))
+            self._pct_var.set(f"{pct}%  ·  {elapsed:.1f}s")
+            self._sync_msg_label()
+
+        def _redraw(self) -> None:
+            cv = self._track
+            w = cv.winfo_width()
+            h = cv.winfo_height()
+            if w < 24 or h < 4:
+                return
+            cv.delete("all")
+            r = max(2, h // 2)
+            draw_aa_box(cv, 0, 0, w, h, r, fill="#E2E8F0", border="", bg=C_BG_SUBTLE, border_px=0)
+
+            frac = max(0.0, min(1.0, self._disp_frac))
+            if frac > 0.005:
+                fill_w = max(h, int(round(w * frac)))
+                draw_aa_box(cv, 0, 0, fill_w, h, r, fill=C_ACCENT, border="", bg="#E2E8F0", border_px=0)
+                # Animated traveling shimmer inside active bar so large files never appear frozen
+                if frac < 0.995 and fill_w > S(24):
+                    band_w = max(S(24), min(S(64), fill_w // 2))
+                    span = max(1, fill_w - band_w)
+                    sx1 = int(span * (0.5 - 0.5 * math.cos(self._phase * 2.0 * math.pi)))
+                    sx2 = min(fill_w - 1, sx1 + band_w)
+                    if sx2 > sx1 + 4:
+                        draw_aa_box(
+                            cv,
+                            sx1,
+                            max(1, h // 5),
+                            sx2,
+                            max(h // 5 + 2, h - h // 5),
+                            max(1, (h - 2 * (h // 5)) // 2),
+                            fill="#818CF8",
+                            border="",
+                            bg=C_ACCENT,
+                            border_px=0,
+                        )
+            else:
+                # Indeterminate gentle bouncing pill when starting up
+                band_w = max(S(36), w // 4)
+                sx1 = int((w - band_w) * (0.5 - 0.5 * math.cos(self._phase * 2.0 * math.pi)))
+                draw_aa_box(cv, sx1, 0, sx1 + band_w, h, r, fill=C_ACCENT, border="", bg="#E2E8F0", border_px=0)
+
     # ---- Configure Adaptive Window Geometry Across Small Laptops, HiDPI & Multi-Monitor ----
     chrome_w, chrome_h = S(20), S(46)
     avail_w = max(S(640), work_w - chrome_w)
@@ -4042,7 +4174,29 @@ def run_gui() -> None:
         _apply_win32_studio_chrome(root)
         root.lift()
 
-    def _fit_and_place_modal(dlg: tk.Toplevel, body: tk.Widget, pref_w: int) -> None:
+    def _ensure_modal_fits(dlg: tk.Toplevel, body: tk.Widget) -> None:
+        """Expand modal height smoothly when an inline progress bar is revealed, staying inside work-area."""
+        try:
+            dlg.update_idletasks()
+            cur_w = max(dlg.winfo_width(), body.winfo_reqwidth())
+            need_h = body.winfo_reqheight() + S(8)
+            if need_h > dlg.winfo_height():
+                new_h = min(avail_h, need_h)
+                cur_x = dlg.winfo_x()
+                max_dy = max(work_y + S(8), work_y + work_h - new_h - S(30))
+                new_y = max(work_y + S(8), min(dlg.winfo_y(), max_dy))
+                dlg.geometry(f"{cur_w}x{new_h}+{cur_x}+{new_y}")
+                dlg.update_idletasks()
+        except Exception:
+            pass
+
+    def _fit_and_place_modal(
+        dlg: tk.Toplevel,
+        body: tk.Widget,
+        pref_w: int,
+        *,
+        can_close=None,
+    ) -> None:
         """Size modal strictly from content height + clamp inside active monitor work-area (X11 grab-safe)."""
         dlg.update_idletasks()
         req_w = body.winfo_reqwidth()
@@ -4077,7 +4231,14 @@ def run_gui() -> None:
             pass
         dlg.lift()
         dlg.focus_force()
-        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+
+        def _try_close(_e: object = None) -> None:
+            if can_close is not None and not can_close():
+                return
+            dlg.destroy()
+
+        dlg.bind("<Escape>", _try_close)
+        dlg.protocol("WM_DELETE_WINDOW", _try_close)
 
     # ---- Reload & Branch Actions ------------------------------------------
     def reload_conversations() -> None:
@@ -4119,51 +4280,83 @@ def run_gui() -> None:
 
         sel_turn = current_turns[int(sel[0])]
         custom_t = title_var.get().strip() or None
+        src_cid_snap = selected_cid
+        turn_snap = sel_turn["turn"]
 
         is_cloning = True
         cta_btn.set_loading(True, "正在创建分支...")
-        root.update_idletasks()
-        root.update()
+        export_btn.set_loading(True)
+        import_btn.set_loading(True)
+        refresh_btn.set_loading(True)
+        root.configure(cursor="watch")
+        start_ts = time.monotonic()
 
-        try:
-            res = branch_conversation(
-                source_cid=selected_cid,
-                custom_new_title=custom_t,
-                turn_number=sel_turn["turn"],
-            )
-        except Exception as exc:
-            is_cloning = False
-            cta_btn.set_loading(False, "立即创建并打开新对话  →")
-            messagebox.showerror("克隆失败", str(exc), parent=root)
-            return
+        work_state: dict[str, object] = {"done": False, "res": None, "err": None}
 
-        res_surface = res.get("surface", "app")
-        try:
-            root.clipboard_clear()
-            root.clipboard_append(res.get("resume_command") or res["link"])
-            root.update()
-        except Exception:
-            pass
-
-        saved_geom = _park_root_for_auto_open()
-        opened = auto_open_in_antigravity(res["search_token"], surface=res_surface, new_cid=res["new_cid"])
-        root.withdraw()
-        root.update_idletasks()
-        if not opened:
-            _restore_root_after_failed_open(saved_geom)
-            if res_surface == "cli":
-                messagebox.showinfo(
-                    "CLI 分支已创建",
-                    f"已成功创建 agy CLI 分支：{res['new_title']}\n\n恢复命令已复制到剪贴板，在终端执行即可进入：\n{res.get('resume_command')}",
-                    parent=root,
+        def _branch_worker() -> None:
+            try:
+                work_state["res"] = branch_conversation(
+                    source_cid=src_cid_snap,
+                    custom_new_title=custom_t,
+                    turn_number=turn_snap,
                 )
-            else:
-                messagebox.showinfo(
-                    "分支已创建",
-                    f"已成功创建分支：{res['new_title']}\n\n请在 Antigravity 左上角搜索框粘贴或搜索标题打开（跳转链接已复制到剪贴板）。",
-                    parent=root,
-                )
-        root.destroy()
+            except Exception as exc:
+                work_state["err"] = exc
+            finally:
+                work_state["done"] = True
+
+        threading.Thread(target=_branch_worker, daemon=True).start()
+
+        def _poll_branch() -> None:
+            nonlocal is_cloning
+            if not work_state["done"]:
+                elapsed = time.monotonic() - start_ts
+                dots = "." * (int(elapsed * 3) % 3 + 1)
+                cta_btn.set_loading(True, f"正在创建分支{dots} ({elapsed:.1f}s)")
+                root.after(80, _poll_branch)
+                return
+
+            root.configure(cursor="")
+            if work_state["err"] is not None:
+                is_cloning = False
+                cta_btn.set_loading(False, "立即创建并打开新对话  →")
+                export_btn.set_loading(False)
+                import_btn.set_loading(False)
+                refresh_btn.set_loading(False)
+                messagebox.showerror("克隆失败", str(work_state["err"]), parent=root)
+                return
+
+            res = work_state["res"]
+            assert isinstance(res, dict)
+            res_surface = res.get("surface", "app")
+            try:
+                root.clipboard_clear()
+                root.clipboard_append(res.get("resume_command") or res["link"])
+                root.update()
+            except Exception:
+                pass
+
+            saved_geom = _park_root_for_auto_open()
+            opened = auto_open_in_antigravity(res["search_token"], surface=res_surface, new_cid=res["new_cid"])
+            root.withdraw()
+            root.update_idletasks()
+            if not opened:
+                _restore_root_after_failed_open(saved_geom)
+                if res_surface == "cli":
+                    messagebox.showinfo(
+                        "CLI 分支已创建",
+                        f"已成功创建 agy CLI 分支：{res['new_title']}\n\n恢复命令已复制到剪贴板，在终端执行即可进入：\n{res.get('resume_command')}",
+                        parent=root,
+                    )
+                else:
+                    messagebox.showinfo(
+                        "分支已创建",
+                        f"已成功创建分支：{res['new_title']}\n\n请在 Antigravity 左上角搜索框粘贴或搜索标题打开（跳转链接已复制到剪贴板）。",
+                        parent=root,
+                    )
+            root.destroy()
+
+        root.after(60, _poll_branch)
 
     do_branch_ref.append(do_branch_and_open)
 
@@ -4229,6 +4422,10 @@ def run_gui() -> None:
         # Pack bottom button row FIRST so buttons never clip on small screens or large system fonts
         btn_row = tk.Frame(body, bg=C_BG_APP)
         btn_row.pack(side="bottom", fill="x", pady=(S(12), 0))
+
+        # Hidden animated progress card revealed above btn_row while exporting in background thread
+        export_prog = StudioProgressBar(body, bg_behind=C_BG_APP)
+        is_exporting = [False]
 
         tk.Label(
             body,
@@ -4324,7 +4521,12 @@ def run_gui() -> None:
             wrap_px=max(S(180), inner_w - S(34)),
         ).pack(fill="x")
 
+        export_act_btn_ref: list[PillButton] = []
+        cancel_act_btn_ref: list[PillButton] = []
+
         def _do_export() -> None:
+            if is_exporting[0]:
+                return
             fmt = fmt_var.get()
             ext = ".agyshare" if fmt == "agyshare" else ".md"
             ftypes = [("Antigravity 分享包", "*.agyshare")] if fmt == "agyshare" else [("Markdown 文档", "*.md")]
@@ -4338,49 +4540,122 @@ def run_gui() -> None:
             )
             if not save_path:
                 return
+
+            is_exporting[0] = True
+            inc_swarm_snap = include_swarm_var.get()
+            redact_snap = redact_var.get()
+            src_cid_snap = selected_cid
+            turn_snap = sel_turn_num if is_trunc else None
+
+            if export_act_btn_ref:
+                export_act_btn_ref[0].set_loading(True, "正在打包导出...")
+            if cancel_act_btn_ref:
+                cancel_act_btn_ref[0].set_loading(True)
+            export_prog.reset("正在读取源对话与关联数据...")
+            export_prog.pack(side="bottom", fill="x", pady=(S(12), 0))
+            _ensure_modal_fits(dlg, body)
             dlg.configure(cursor="watch")
-            dlg.update()
-            try:
-                if fmt == "md":
-                    res = sc_mod.export_markdown_handoff(
-                        source_cid=selected_cid,
-                        turn_number=sel_turn_num if is_trunc else None,
-                        output_path=Path(save_path),
-                        include_swarm=include_swarm_var.get(),
-                        redact_secrets=redact_var.get(),
-                    )
-                else:
-                    res = sc_mod.export_share_bundle(
-                        source_cid=selected_cid,
-                        turn_number=sel_turn_num if is_trunc else None,
-                        output_path=Path(save_path),
-                        include_swarm=include_swarm_var.get(),
-                        redact_secrets=redact_var.get(),
-                    )
-            except Exception as exc:
+
+            state_lock = threading.Lock()
+            prog_state: dict[str, object] = {
+                "frac": 0.02,
+                "msg": "正在读取源对话与关联数据...",
+                "done": False,
+                "res": None,
+                "err": None,
+            }
+
+            def _on_progress(frac: float, msg: str) -> None:
+                with state_lock:
+                    prog_state["frac"] = frac
+                    prog_state["msg"] = msg
+
+            def _export_worker() -> None:
+                try:
+                    if fmt == "md":
+                        res = sc_mod.export_markdown_handoff(
+                            source_cid=src_cid_snap,
+                            turn_number=turn_snap,
+                            output_path=Path(save_path),
+                            include_swarm=inc_swarm_snap,
+                            redact_secrets=redact_snap,
+                            progress_cb=_on_progress,
+                        )
+                    else:
+                        res = sc_mod.export_share_bundle(
+                            source_cid=src_cid_snap,
+                            turn_number=turn_snap,
+                            output_path=Path(save_path),
+                            include_swarm=inc_swarm_snap,
+                            redact_secrets=redact_snap,
+                            progress_cb=_on_progress,
+                        )
+                    with state_lock:
+                        prog_state["res"] = res
+                        prog_state["frac"] = 1.0
+                        prog_state["msg"] = "导出完成！"
+                except Exception as exc:
+                    with state_lock:
+                        prog_state["err"] = exc
+                finally:
+                    with state_lock:
+                        prog_state["done"] = True
+
+            threading.Thread(target=_export_worker, daemon=True).start()
+
+            def _poll_export() -> None:
+                if not dlg.winfo_exists():
+                    return
+                with state_lock:
+                    frac = float(prog_state["frac"])  # type: ignore[arg-type]
+                    msg = str(prog_state["msg"])
+                    done = bool(prog_state["done"])
+                    res = prog_state["res"]
+                    err = prog_state["err"]
+
+                export_prog.set_progress(frac, msg)
+                export_prog.tick()
+
+                if not done:
+                    dlg.after(40, _poll_export)
+                    return
+
+                is_exporting[0] = False
                 dlg.configure(cursor="")
-                messagebox.showerror("导出失败", str(exc), parent=dlg)
-                return
+                if err is not None:
+                    export_prog.pack_forget()
+                    if export_act_btn_ref:
+                        export_act_btn_ref[0].set_loading(False, "选择保存位置并导出  →")
+                    if cancel_act_btn_ref:
+                        cancel_act_btn_ref[0].set_loading(False)
+                    messagebox.showerror("导出失败", str(err), parent=dlg)
+                    return
 
-            try:
-                root.clipboard_clear()
-                root.clipboard_append(res["output_path"])
-                root.update()
-            except Exception:
-                pass
-            size_mb = res["size_bytes"] / (1024 * 1024)
-            size_str = f"{size_mb:.2f} MB" if size_mb >= 1.0 else f"{res['size_bytes'] / 1024:.1f} KB"
-            extra_child = f"\n包含子对话：{res.get('child_count', 0)} 个（含 Swarm / 子代理 / 侧边提问）" if res.get("child_count") else ""
-            dlg.destroy()
-            messagebox.showinfo(
-                "导出成功",
-                f"对话分享文件已生成（路径已复制到剪贴板）：\n{res['output_path']}\n\n"
-                f"文件大小：{size_str}{extra_child}\n"
-                f"已自动脱敏凭据：{res.get('redacted_secrets', 0)} 处",
-                parent=root,
-            )
+                assert isinstance(res, dict)
+                export_prog.set_progress(1.0, "导出完成！")
+                export_prog.tick()
+                dlg.update_idletasks()
+                try:
+                    root.clipboard_clear()
+                    root.clipboard_append(res["output_path"])
+                    root.update()
+                except Exception:
+                    pass
+                size_mb = res["size_bytes"] / (1024 * 1024)
+                size_str = f"{size_mb:.2f} MB" if size_mb >= 1.0 else f"{res['size_bytes'] / 1024:.1f} KB"
+                extra_child = f"\n包含子对话：{res.get('child_count', 0)} 个（含 Swarm / 子代理 / 侧边提问）" if res.get("child_count") else ""
+                dlg.destroy()
+                messagebox.showinfo(
+                    "导出成功",
+                    f"对话分享文件已生成（路径已复制到剪贴板）：\n{res['output_path']}\n\n"
+                    f"文件大小：{size_str}{extra_child}\n"
+                    f"已自动脱敏凭据：{res.get('redacted_secrets', 0)} 处",
+                    parent=root,
+                )
 
-        PillButton(
+            dlg.after(40, _poll_export)
+
+        export_act_btn = PillButton(
             btn_row,
             text="选择保存位置并导出  →",
             command=_do_export,
@@ -4392,12 +4667,14 @@ def run_gui() -> None:
             fill_active=C_CTA_ACTIVE,
             fg="#FFFFFF",
             font_obj=f_item_bold,
-        ).pack(side="right")
+        )
+        export_act_btn.pack(side="right")
+        export_act_btn_ref.append(export_act_btn)
 
-        PillButton(
+        cancel_act_btn = PillButton(
             btn_row,
             text="取消",
-            command=dlg.destroy,
+            command=lambda: None if is_exporting[0] else dlg.destroy(),
             width=76,
             height=36,
             bg_behind=C_BG_APP,
@@ -4408,9 +4685,11 @@ def run_gui() -> None:
             font_obj=f_item,
             border_normal=C_BORDER,
             border_hover=C_BORDER_HOVER,
-        ).pack(side="right", padx=(0, S(8)))
+        )
+        cancel_act_btn.pack(side="right", padx=(0, S(8)))
+        cancel_act_btn_ref.append(cancel_act_btn)
 
-        _fit_and_place_modal(dlg, body, 520)
+        _fit_and_place_modal(dlg, body, 520, can_close=lambda: not is_exporting[0])
 
     def open_import_share_dialog() -> None:
         try:
@@ -4452,6 +4731,10 @@ def run_gui() -> None:
         # Pack bottom button row FIRST so buttons never clip on small screens or large system fonts
         btn_row = tk.Frame(body, bg=C_BG_APP)
         btn_row.pack(side="bottom", fill="x", pady=(S(14), 0))
+
+        # Hidden animated progress card revealed above btn_row while importing in background thread
+        import_prog = StudioProgressBar(body, bg_behind=C_BG_APP)
+        is_importing = [False]
 
         hdr_text = ellipsize(f"准备导入：{manifest.get('title', '未命名对话')}", f_card_hdr, inner_w)
         tk.Label(
@@ -4553,11 +4836,13 @@ def run_gui() -> None:
         proj_combo.bind("<<ComboboxSelected>>", _on_proj_selected)
 
         def _pick_ws() -> None:
+            if is_importing[0]:
+                return
             chosen = filedialog.askdirectory(parent=dlg, title="选择对应的本地代码仓库目录")
             if chosen:
                 ws_var.set(chosen)
 
-        PillButton(
+        browse_ws_btn = PillButton(
             ws_row,
             text="浏览...",
             command=_pick_ws,
@@ -4571,7 +4856,8 @@ def run_gui() -> None:
             font_obj=f_small_bold,
             border_normal=C_BORDER,
             border_hover=C_BORDER_HOVER,
-        ).pack(side="right", padx=(S(8), 0))
+        )
+        browse_ws_btn.pack(side="right", padx=(S(8), 0))
 
         ws_pill = PillInput(
             ws_row,
@@ -4586,56 +4872,130 @@ def run_gui() -> None:
         )
         ws_pill.pack(side="left", fill="x", expand=True)
 
+        import_act_btn_ref: list[PillButton] = []
+        import_cancel_btn_ref: list[PillButton] = []
+
         def _do_import() -> None:
+            if is_importing[0]:
+                return
             sel_label = proj_combo_var.get()
             pid_chosen = next((pid for lbl, pid in proj_choices if lbl == sel_label), "outside-of-project")
             ws_p = Path(ws_var.get().strip()) if ws_var.get().strip() else None
             custom_t = imp_title_var.get().strip() or None
+
+            is_importing[0] = True
+            if import_act_btn_ref:
+                import_act_btn_ref[0].set_loading(True, "正在解压导入...")
+            if import_cancel_btn_ref:
+                import_cancel_btn_ref[0].set_loading(True)
+            browse_ws_btn.set_loading(True)
+            import_prog.reset("正在校验并解压分享包...")
+            import_prog.pack(side="bottom", fill="x", pady=(S(12), 0))
+            _ensure_modal_fits(dlg, body)
             dlg.configure(cursor="watch")
-            dlg.update()
-            try:
-                res = sc_mod.import_share_bundle(
-                    Path(bundle_file),
-                    custom_title=custom_t,
-                    project_id=pid_chosen,
-                    workspace_path=ws_p,
-                )
-            except Exception as exc:
+
+            state_lock = threading.Lock()
+            prog_state: dict[str, object] = {
+                "frac": 0.02,
+                "msg": "正在校验并解压分享包...",
+                "done": False,
+                "res": None,
+                "err": None,
+            }
+
+            def _on_progress(frac: float, msg: str) -> None:
+                with state_lock:
+                    prog_state["frac"] = frac
+                    prog_state["msg"] = msg
+
+            def _import_worker() -> None:
+                try:
+                    res = sc_mod.import_share_bundle(
+                        Path(bundle_file),
+                        custom_title=custom_t,
+                        project_id=pid_chosen,
+                        workspace_path=ws_p,
+                        progress_cb=_on_progress,
+                    )
+                    with state_lock:
+                        prog_state["res"] = res
+                        prog_state["frac"] = 1.0
+                        prog_state["msg"] = "导入完成，正在打开新对话..."
+                except Exception as exc:
+                    with state_lock:
+                        prog_state["err"] = exc
+                finally:
+                    with state_lock:
+                        prog_state["done"] = True
+
+            threading.Thread(target=_import_worker, daemon=True).start()
+
+            def _poll_import() -> None:
+                if not dlg.winfo_exists():
+                    return
+                with state_lock:
+                    frac = float(prog_state["frac"])  # type: ignore[arg-type]
+                    msg = str(prog_state["msg"])
+                    done = bool(prog_state["done"])
+                    res = prog_state["res"]
+                    err = prog_state["err"]
+
+                import_prog.set_progress(frac, msg)
+                import_prog.tick()
+
+                if not done:
+                    dlg.after(40, _poll_import)
+                    return
+
+                is_importing[0] = False
                 dlg.configure(cursor="")
-                messagebox.showerror("导入失败", str(exc), parent=dlg)
-                return
+                if err is not None:
+                    import_prog.pack_forget()
+                    if import_act_btn_ref:
+                        import_act_btn_ref[0].set_loading(False, "立即导入并打开新对话  →")
+                    if import_cancel_btn_ref:
+                        import_cancel_btn_ref[0].set_loading(False)
+                    browse_ws_btn.set_loading(False)
+                    messagebox.showerror("导入失败", str(err), parent=dlg)
+                    return
 
-            try:
-                root.clipboard_clear()
-                root.clipboard_append(res["link"])
+                assert isinstance(res, dict)
+                import_prog.set_progress(1.0, "导入完成，正在打开新对话...")
+                import_prog.tick()
+                dlg.update_idletasks()
+                try:
+                    root.clipboard_clear()
+                    root.clipboard_append(res["link"])
+                    root.update_idletasks()
+                except Exception:
+                    pass
+
+                # Release modal grab & park root cleanly before handoff so nothing occludes Antigravity's toolbar
+                try:
+                    dlg.grab_release()
+                except Exception:
+                    pass
+                dlg.withdraw()
+                saved_geom = _park_root_for_auto_open()
+
+                opened = auto_open_in_antigravity(res["search_token"], surface="app", new_cid=res["new_cid"])
+                dlg.destroy()
+                root.withdraw()
                 root.update_idletasks()
-            except Exception:
-                pass
+                if not opened:
+                    _restore_root_after_failed_open(saved_geom)
+                    messagebox.showinfo(
+                        "导入成功",
+                        f"已成功导入对话：{res['new_title']}\n"
+                        f"（同步迁移子对话：{res.get('imported_children', 0)} 个）\n\n"
+                        f"请在 Antigravity 左上角 🔍 搜索框输入或粘贴标题打开（搜索码 {res['search_token']} 或标题均可秒搜，跳转链接也已复制到剪贴板）！",
+                        parent=root,
+                    )
+                root.destroy()
 
-            # Release modal grab & park root cleanly before handoff so nothing occludes Antigravity's toolbar
-            try:
-                dlg.grab_release()
-            except Exception:
-                pass
-            dlg.withdraw()
-            saved_geom = _park_root_for_auto_open()
+            dlg.after(40, _poll_import)
 
-            opened = auto_open_in_antigravity(res["search_token"], surface="app", new_cid=res["new_cid"])
-            dlg.destroy()
-            root.withdraw()
-            root.update_idletasks()
-            if not opened:
-                _restore_root_after_failed_open(saved_geom)
-                messagebox.showinfo(
-                    "导入成功",
-                    f"已成功导入对话：{res['new_title']}\n"
-                    f"（同步迁移子对话：{res.get('imported_children', 0)} 个）\n\n"
-                    f"请在 Antigravity 左上角 🔍 搜索框输入或粘贴标题打开（搜索码 {res['search_token']} 或标题均可秒搜，跳转链接也已复制到剪贴板）！",
-                    parent=root,
-                )
-            root.destroy()
-
-        PillButton(
+        import_act_btn = PillButton(
             btn_row,
             text="立即导入并打开新对话  →",
             command=_do_import,
@@ -4647,12 +5007,14 @@ def run_gui() -> None:
             fill_active=C_CTA_ACTIVE,
             fg="#FFFFFF",
             font_obj=f_item_bold,
-        ).pack(side="right")
+        )
+        import_act_btn.pack(side="right")
+        import_act_btn_ref.append(import_act_btn)
 
-        PillButton(
+        import_cancel_btn = PillButton(
             btn_row,
             text="取消",
-            command=dlg.destroy,
+            command=lambda: None if is_importing[0] else dlg.destroy(),
             width=76,
             height=36,
             bg_behind=C_BG_APP,
@@ -4663,9 +5025,11 @@ def run_gui() -> None:
             font_obj=f_item,
             border_normal=C_BORDER,
             border_hover=C_BORDER_HOVER,
-        ).pack(side="right", padx=(0, S(8)))
+        )
+        import_cancel_btn.pack(side="right", padx=(0, S(8)))
+        import_cancel_btn_ref.append(import_cancel_btn)
 
-        _fit_and_place_modal(dlg, body, 540)
+        _fit_and_place_modal(dlg, body, 540, can_close=lambda: not is_importing[0])
 
     export_cb_ref.append(open_export_share_dialog)
     import_cb_ref.append(open_import_share_dialog)

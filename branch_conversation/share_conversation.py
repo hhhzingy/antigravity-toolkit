@@ -40,10 +40,36 @@ import sqlite3
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, unquote, urlparse
 import uuid
 import zipfile
+
+ProgressCallback = Callable[[float, str], None]
+
+# Already-compressed media/archive suffixes stored directly in `.agyshare` ZIP for 3x-5x faster big exports
+_PRECOMPRESSED_EXTS = frozenset(
+    {
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".heic",
+        ".mp4", ".webm", ".mov", ".mkv", ".avi", ".mp3", ".m4a", ".ogg", ".opus",
+        ".zip", ".gz", ".bz2", ".xz", ".7z", ".rar", ".pdf", ".woff2",
+    }
+)
+
+
+def _emit_progress(cb: ProgressCallback | None, frac: float, msg: str) -> None:
+    if cb is None:
+        return
+    try:
+        cb(max(0.0, min(1.0, float(frac))), msg)
+    except Exception:
+        pass
+
+
+def _fmt_mb(num_bytes: int) -> str:
+    if num_bytes >= 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024):.1f} MB"
+    return f"{max(0.1, num_bytes / 1024):.0f} KB"
 
 try:
     import branch_conversation as bc
@@ -858,6 +884,9 @@ def _rewrite_sqlite_db(
     new_cid: str | None = None,
     target_pid: str | None = None,
     ws_uris: list[str] | None = None,
+    progress_cb: ProgressCallback | None = None,
+    progress_range: tuple[float, float] | None = None,
+    progress_label: str = "",
 ) -> tuple[int, int, int]:
     """
     Rewrites UUIDs and paths safely across all tables of a conversation `.db` using
@@ -883,7 +912,9 @@ def _rewrite_sqlite_db(
         step_rows = conn.execute(
             "SELECT idx, metadata, error_details, permissions, task_details, render_info, step_payload FROM steps"
         ).fetchall()
-        for idx, meta, err, perm, task_d, rend, payload in step_rows:
+        total_steps = len(step_rows)
+        report_every = max(1, total_steps // 20) if total_steps > 0 else 1
+        for row_i, (idx, meta, err, perm, task_d, rend, payload) in enumerate(step_rows, 1):
             cols_in = [meta, err, perm, task_d, rend, payload]
             cols_out = []
             row_changed = False
@@ -907,6 +938,11 @@ def _rewrite_sqlite_db(
                        WHERE idx=?""",
                     (*cols_out, idx),
                 )
+            if progress_cb and progress_range and (row_i % report_every == 0 or row_i == total_steps):
+                p0, p1 = progress_range
+                frac = p0 + (p1 - p0) * (row_i / max(1, total_steps)) * 0.85
+                lbl = progress_label or "正在处理对话步骤"
+                _emit_progress(progress_cb, frac, f"{lbl} ({row_i}/{total_steps} 步)...")
 
         for tbl, pk_col in (
             ("gen_metadata", "idx"),
@@ -940,6 +976,10 @@ def _rewrite_sqlite_db(
         last_u = conn.execute("SELECT MAX(idx) FROM steps WHERE step_type = 14").fetchone()
         last_user_idx = int(last_u[0]) if (last_u and last_u[0] is not None) else -1
 
+        if progress_cb and progress_range:
+            p0, p1 = progress_range
+            lbl = progress_label or "正在整理对话数据库"
+            _emit_progress(progress_cb, p0 + (p1 - p0) * 0.92, f"{lbl}（压缩整理数据库）...")
         conn.commit()
         conn.execute("PRAGMA journal_mode=DELETE")
         conn.execute("VACUUM")
@@ -1089,8 +1129,10 @@ def export_markdown_handoff(
     include_swarm: bool = True,
     redact_secrets: bool = True,
     agy_root: Path | None = None,
+    progress_cb: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Export a clean, portable Markdown context handoff document (zero-tool-required fallback)."""
+    _emit_progress(progress_cb, 0.08, "正在读取源对话信息与历史轮次...")
     root_dir = agy_root or bc.AGY_ROOT
     sum_db = root_dir / "conversation_summaries.db"
     if not sum_db.is_file():
@@ -1135,9 +1177,15 @@ def export_markdown_handoff(
     redactions = 0
     _, ci_reps = _build_export_path_replacements(Path.home(), json.loads(src.get("workspace_uris") or "[]"))
 
+    _emit_progress(progress_cb, 0.22, "正在整理并脱敏对话正文...")
     if tfile.is_file():
         turn_no = 0
-        for raw_ln in tfile.read_text(encoding="utf-8", errors="ignore").splitlines():
+        raw_lines = tfile.read_text(encoding="utf-8", errors="ignore").splitlines()
+        total_ln = max(1, len(raw_lines))
+        step_ln = max(1, total_ln // 20)
+        for ln_i, raw_ln in enumerate(raw_lines, 1):
+            if ln_i % step_ln == 0 or ln_i == total_ln:
+                _emit_progress(progress_cb, 0.22 + 0.58 * (ln_i / total_ln), f"正在脱敏对话内容 ({ln_i}/{total_ln})...")
             if not raw_ln.strip():
                 continue
             try:
@@ -1168,6 +1216,7 @@ def export_markdown_handoff(
     if include_swarm:
         board = root_dir / "brain" / cid / ".system_generated" / "swarm" / "board.jsonl"
         if board.is_file():
+            _emit_progress(progress_cb, 0.85, "正在导出 Swarm 团队共享看板...")
             md_lines.extend(["---", "", "## Swarm 团队共享看板记录", ""])
             for raw_ln in board.read_text(encoding="utf-8", errors="ignore").splitlines():
                 if not raw_ln.strip():
@@ -1182,8 +1231,10 @@ def export_markdown_handoff(
                 redactions += r
                 md_lines.extend([f"### [#{seq}] `{agent}`", "", btxt, ""])
 
+    _emit_progress(progress_cb, 0.94, "正在写入 Markdown 文档...")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(md_lines), encoding="utf-8")
+    _emit_progress(progress_cb, 1.0, "导出完成！")
     return {
         "format": "markdown",
         "source_cid": cid,
@@ -1207,12 +1258,14 @@ def export_share_bundle(
     redact_secrets: bool = True,
     agy_root: Path | None = None,
     source_home: Path | None = None,
+    progress_cb: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """
     Exports a conversation (and optionally its entire Swarm / Subagents / Side Questions tree)
     into a self-contained, path-sanitized, secret-redacted `.agyshare` ZIP bundle.
     100% read-only against live Antigravity files — never affects running processes or chats.
     """
+    _emit_progress(progress_cb, 0.03, "正在读取源对话与 Swarm 关联树...")
     root_dir = agy_root or bc.AGY_ROOT
     home_dir = source_home or Path.home()
     sum_db = root_dir / "conversation_summaries.db"
@@ -1318,6 +1371,7 @@ def export_share_bundle(
         sum_stage.mkdir(parents=True, exist_ok=True)
 
         # 2. Online-backup & sanitize root DB
+        _emit_progress(progress_cb, 0.08, "正在热备份主对话数据库...")
         src_root_db = root_dir / "conversations" / f"{old_root_cid}.db"
         if not src_root_db.is_file():
             raise FileNotFoundError(f"未找到源对话数据库: {src_root_db}")
@@ -1330,16 +1384,24 @@ def export_share_bundle(
             sc.close()
             dc.close()
 
+        has_children_to_export = bool(include_swarm and tree["children"])
+        root_db_end = 0.24 if has_children_to_export else 0.42
+        root_brain_end = 0.30 if has_children_to_export else 0.60
+
         root_steps, root_last_u, r_red = _rewrite_sqlite_db(
             dst_root_db,
             exact_reps=exact_reps,
             ci_reps=ci_path_reps,
             redact_secrets=redact_secrets,
             cutoff_count=cutoff_count,
+            progress_cb=progress_cb,
+            progress_range=(0.10, root_db_end),
+            progress_label="正在脱敏主对话记录",
         )
         total_redactions += r_red
 
         # Sanitize root brain/
+        _emit_progress(progress_cb, root_db_end, "正在整理并脱敏主对话产物与附件...")
         b_red = _copy_and_sanitize_brain_dir(
             root_dir / "brain" / old_root_cid,
             brain_stage / old_root_cid,
@@ -1350,6 +1412,7 @@ def export_share_bundle(
             redact_secrets=redact_secrets,
         )
         total_redactions += b_red
+        _emit_progress(progress_cb, root_brain_end, "主对话脱敏完成")
 
         # 3. Export children (Swarm workers, Subagents, Side Questions) if include_swarm=True
         exported_children: list[dict[str, Any]] = []
@@ -1367,11 +1430,14 @@ def export_share_bundle(
             annotations_map[old_root_cid] = atxt
 
         if include_swarm:
-            for ch in tree["children"]:
+            total_ch = len(tree["children"])
+            for ch_idx, ch in enumerate(tree["children"], 1):
                 ch_cid = ch["conversation_id"]
                 src_ch_db = root_dir / "conversations" / f"{ch_cid}.db"
                 if not src_ch_db.is_file():
                     continue
+                ch_frac = root_brain_end + (0.62 - root_brain_end) * ((ch_idx - 1) / max(1, total_ch))
+                _emit_progress(progress_cb, ch_frac, f"正在脱敏子对话与 Swarm 成员 ({ch_idx}/{total_ch})...")
                 dst_ch_db = conv_stage / f"{ch_cid}.db"
                 sc = sqlite3.connect(f"file:{src_ch_db.as_posix()}?mode=ro", uri=True, timeout=15.0)
                 dc = sqlite3.connect(dst_ch_db, timeout=15.0)
@@ -1444,6 +1510,7 @@ def export_share_bundle(
                 )
 
         # 4. Sanitize root summary & FTS rows
+        _emit_progress(progress_cb, 0.64, "正在写入分享包清单与搜索索引...")
         clean_root_sum = dict(src_info)
         clean_root_sum["step_count"] = root_steps
         clean_root_sum["last_user_input_step_index"] = root_last_u
@@ -1539,12 +1606,40 @@ def export_share_bundle(
             encoding="utf-8",
         )
 
-        # 6. Zip into `.agyshare`
+        # 6. Zip into `.agyshare` with chunked byte-level progress & smart skip-deflate for pre-compressed media
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        staged_files = [fp for fp in sorted(tmp_dir.rglob("*")) if fp.is_file()]
+        total_raw_bytes = sum(fp.stat().st_size for fp in staged_files)
+        done_raw_bytes = 0
+        last_emit_ts = 0.0
+        _emit_progress(progress_cb, 0.68, f"正在打包压缩分享文件 (0 / {_fmt_mb(total_raw_bytes)})...")
         with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-            for fp in sorted(tmp_dir.rglob("*")):
-                if fp.is_file():
-                    zf.write(fp, fp.relative_to(tmp_dir).as_posix())
+            for fp in staged_files:
+                arcname = fp.relative_to(tmp_dir).as_posix()
+                zi = zipfile.ZipInfo.from_file(fp, arcname=arcname)
+                zi.compress_type = (
+                    zipfile.ZIP_STORED
+                    if fp.suffix.lower() in _PRECOMPRESSED_EXTS
+                    else zipfile.ZIP_DEFLATED
+                )
+                with fp.open("rb") as src_f, zf.open(zi, "w") as dst_f:
+                    while True:
+                        chunk = src_f.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        dst_f.write(chunk)
+                        done_raw_bytes += len(chunk)
+                        now_ts = time.monotonic()
+                        if progress_cb and (now_ts - last_emit_ts >= 0.06 or done_raw_bytes >= total_raw_bytes):
+                            last_emit_ts = now_ts
+                            frac = 0.68 + 0.31 * (done_raw_bytes / max(1, total_raw_bytes))
+                            _emit_progress(
+                                progress_cb,
+                                frac,
+                                f"正在打包压缩分享文件 ({_fmt_mb(done_raw_bytes)} / {_fmt_mb(total_raw_bytes)})...",
+                            )
+
+    _emit_progress(progress_cb, 1.0, "导出完成！")
 
     return {
         "format": "agyshare",
@@ -1730,6 +1825,7 @@ def import_share_bundle(
     workspace_path: Path | str | None = None,
     agy_root: Path | None = None,
     target_home: Path | str | None = None,
+    progress_cb: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """
     Imports an `.agyshare` bundle cleanly into the recipient's Antigravity storage:
@@ -1741,6 +1837,7 @@ def import_share_bundle(
     if not bundle_path.is_file():
         raise FileNotFoundError(f"未找到分享包文件: {bundle_path}")
 
+    _emit_progress(progress_cb, 0.03, "正在校验并解压分享包...")
     root_dir = agy_root or bc.AGY_ROOT
     home_val: Path | str = target_home if target_home is not None else Path.home()
     target_pid = (project_id or "").strip() or "outside-of-project"
@@ -1769,13 +1866,39 @@ def import_share_bundle(
 
     with tempfile.TemporaryDirectory(prefix="agyshare_import_") as tmp_s:
         tmp_dir = Path(tmp_s)
+        tmp_resolved = str(tmp_dir.resolve())
         with zipfile.ZipFile(bundle_path, "r") as zf:
-            # Safe zip extraction (guard against ZipSlip path traversal)
-            for member in zf.infolist():
+            members = zf.infolist()
+            total_uncomp = sum(max(0, m.file_size) for m in members)
+            done_uncomp = 0
+            last_emit_ts = 0.0
+            # Safe chunked zip extraction (guard against ZipSlip path traversal + report live bytes)
+            for member in members:
                 target_member = (tmp_dir / member.filename).resolve()
-                if not str(target_member).startswith(str(tmp_dir.resolve())):
+                if not str(target_member).startswith(tmp_resolved):
                     raise ValueError(f"拒绝不安全的压缩包路径: {member.filename}")
-            zf.extractall(tmp_dir)
+                if member.is_dir():
+                    target_member.mkdir(parents=True, exist_ok=True)
+                    continue
+                target_member.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member, "r") as src_m, target_member.open("wb") as dst_m:
+                    while True:
+                        chunk = src_m.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        dst_m.write(chunk)
+                        done_uncomp += len(chunk)
+                        now_ts = time.monotonic()
+                        if progress_cb and (now_ts - last_emit_ts >= 0.06 or done_uncomp >= total_uncomp):
+                            last_emit_ts = now_ts
+                            frac = 0.05 + 0.33 * (done_uncomp / max(1, total_uncomp))
+                            _emit_progress(
+                                progress_cb,
+                                frac,
+                                f"正在解压分享包 ({_fmt_mb(done_uncomp)} / {_fmt_mb(total_uncomp)})...",
+                            )
+
+        _emit_progress(progress_cb, 0.40, "正在生成独立会话标识与本地路径映射...")
 
         manifest = json.loads((tmp_dir / "manifest.json").read_text(encoding="utf-8"))
         old_root_cid = manifest["root_cid"]
@@ -1847,11 +1970,19 @@ def import_share_bundle(
         new_step_counts: dict[str, tuple[int, int]] = {}
         new_tids_by_cid: dict[str, str] = {}
 
-        for oc in all_old_cids:
+        total_cids = max(1, len(all_old_cids))
+        for cid_idx, oc in enumerate(all_old_cids, 1):
             nc = cid_map[oc]
             src_db = tmp_dir / "conversations" / f"{oc}.db"
             if not src_db.is_file():
                 continue
+            p_start = 0.42 + 0.44 * ((cid_idx - 1) / total_cids)
+            p_end = 0.42 + 0.44 * (cid_idx / total_cids)
+            if oc == old_root_cid:
+                c_lbl = "正在重建主对话数据库"
+            else:
+                c_lbl = f"正在重建子对话与 Swarm 成员 ({cid_idx - 1}/{max(1, total_cids - 1)})"
+            _emit_progress(progress_cb, p_start, f"{c_lbl}...")
             dst_db = root_dir / "conversations" / f"{nc}.db"
             shutil.copy2(src_db, dst_db)
 
@@ -1873,6 +2004,9 @@ def import_share_bundle(
                 new_cid=nc,
                 target_pid=target_pid,
                 ws_uris=ws_uris_list,
+                progress_cb=progress_cb if oc == old_root_cid else None,
+                progress_range=(p_start, p_start + (p_end - p_start) * 0.72),
+                progress_label=c_lbl,
             )
             new_step_counts[nc] = (steps_cnt, last_u)
 
@@ -1886,6 +2020,8 @@ def import_share_bundle(
 
             src_b = tmp_dir / "brain" / oc
             if src_b.is_dir():
+                if oc == old_root_cid:
+                    _emit_progress(progress_cb, p_start + (p_end - p_start) * 0.78, "正在释放主对话产物与附件...")
                 _copy_and_sanitize_brain_dir(
                     src_b,
                     root_dir / "brain" / nc,
@@ -1900,6 +2036,7 @@ def import_share_bundle(
                 )
 
         # 4. Compute recipient title & timestamps
+        _emit_progress(progress_cb, 0.88, "正在写入侧边栏列表与全文搜索索引...")
         now_ns = time.time_ns()
         now_secs = now_ns // 1_000_000_000
         now_nanos = now_ns % 1_000_000_000
@@ -2111,6 +2248,7 @@ def import_share_bundle(
         finally:
             sconn.close()
 
+    _emit_progress(progress_cb, 1.0, "导入完成！")
     return {
         "new_cid": new_root_cid,
         "new_title": new_title,
