@@ -787,36 +787,68 @@ def auto_open_in_antigravity(search_token: str, *, surface: str = "app", new_cid
     if sys.platform == "darwin":
         for app_name in ("Antigravity", "Antigravity IDE"):
             try:
-                res = subprocess.run(
-                    ["osascript", "-e", f'if application "{app_name}" is running then tell application "{app_name}" to activate'],
+                chk = subprocess.run(
+                    [
+                        "osascript",
+                        "-e",
+                        f'tell application "System Events" to (name of processes) contains "{app_name}"',
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=2.5,
+                    check=False,
+                )
+                if "true" not in (chk.stdout or "").lower():
+                    continue
+
+                subprocess.run(
+                    ["osascript", "-e", f'tell application "{app_name}" to activate'],
                     capture_output=True,
                     timeout=2.5,
                     check=False,
                 )
-                if res.returncode == 0:
-                    if app_name == "Antigravity" and search_token:
-                        safe_tok = search_token.replace('"', '\\"')
+                if app_name == "Antigravity" and search_token:
+                    # Use clipboard + Cmd+V instead of `keystroke` so Chinese/CJK IME never intercepts ASCII tokens
+                    prev_clip: bytes | None = None
+                    if shutil.which("pbpaste"):
+                        cp_out = subprocess.run(["pbpaste"], capture_output=True, timeout=2.0, check=False)
+                        if cp_out.returncode == 0:
+                            prev_clip = cp_out.stdout
+                    if shutil.which("pbcopy"):
                         subprocess.run(
-                            [
-                                "osascript",
-                                "-e",
-                                'delay 0.2',
-                                "-e",
-                                'tell application "System Events" to keystroke "k" using command down',
-                                "-e",
-                                'delay 0.3',
-                                "-e",
-                                f'tell application "System Events" to keystroke "{safe_tok}"',
-                                "-e",
-                                'delay 0.55',
-                                "-e",
-                                'tell application "System Events" to key code 36',
-                            ],
-                            capture_output=True,
-                            timeout=5.0,
+                            ["pbcopy"],
+                            input=search_token.encode("utf-8"),
+                            timeout=2.0,
                             check=False,
                         )
-                    return True
+                    nav = subprocess.run(
+                        [
+                            "osascript",
+                            "-e",
+                            "delay 0.22",
+                            "-e",
+                            'tell application "System Events" to keystroke "k" using command down',
+                            "-e",
+                            "delay 0.28",
+                            "-e",
+                            'tell application "System Events" to keystroke "a" using command down',
+                            "-e",
+                            "delay 0.05",
+                            "-e",
+                            'tell application "System Events" to keystroke "v" using command down',
+                            "-e",
+                            "delay 0.60",
+                            "-e",
+                            'tell application "System Events" to key code 36',
+                        ],
+                        capture_output=True,
+                        timeout=5.5,
+                        check=False,
+                    )
+                    if prev_clip is not None and shutil.which("pbcopy"):
+                        subprocess.run(["pbcopy"], input=prev_clip, timeout=2.0, check=False)
+                    return nav.returncode == 0
+                return False
             except Exception:
                 pass
         return False
@@ -1773,12 +1805,26 @@ def run_gui() -> None:
     except ImportError:
         msg = (
             "未检测到图形界面支持库 tkinter。\n"
+            "  - macOS (Homebrew) 请运行: brew install python-tk\n"
             "  - Ubuntu / Debian 请运行: sudo apt-get install -y python3-tk\n"
             "  - Fedora / RHEL 请运行: sudo dnf install -y python3-tkinter\n"
             "  - 你也可以直接使用命令行模式（如 --list-turns / --turn N）或在聊天框中让 AI 直接创建分支。"
         )
         print(msg, file=sys.stderr)
-        if sys.platform.startswith("linux") and shutil.which("notify-send"):
+        if sys.platform == "darwin":
+            try:
+                subprocess.Popen(
+                    [
+                        "osascript",
+                        "-e",
+                        'display notification "请运行 brew install python-tk 安装图形界面库" with title "缺少 python-tk"',
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
+        elif sys.platform.startswith("linux") and shutil.which("notify-send"):
             try:
                 subprocess.Popen(
                     ["notify-send", "缺少 python3-tk", "请运行: sudo apt-get install -y python3-tk"]
@@ -1820,26 +1866,113 @@ def run_gui() -> None:
     root.configure(bg=C_BG_APP)
     root.title("对话分支克隆 — Antigravity")
 
-    # Determine crisp High-DPI scaling factor
+    # Determine crisp per-monitor High-DPI scaling factor & usable work area across Win / macOS / Linux
     dpi_scale = 1.0
+    work_x = 0
+    work_y = 0
+    work_w = max(800, int(root.winfo_screenwidth() or 1280))
+    work_h = max(540, int(root.winfo_screenheight() or 800))
+
     if sys.platform == "win32":
         try:
-            sys_dpi = ctypes.windll.user32.GetDpiForSystem() or 96
-            dpi_scale = max(1.0, sys_dpi / 96.0)
-            root.tk.call("tk", "scaling", sys_dpi / 72.0)
+            u32_m = ctypes.windll.user32
+            pt_cur = wintypes.POINT()
+            if not u32_m.GetCursorPos(ctypes.byref(pt_cur)):
+                pt_cur = wintypes.POINT(work_w // 2, work_h // 2)
+            u32_m.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+            u32_m.MonitorFromPoint.restype = wintypes.HANDLE
+            hmon = u32_m.MonitorFromPoint(pt_cur, 2)  # MONITOR_DEFAULTTONEAREST
+
+            class _MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT),
+                    ("dwFlags", wintypes.DWORD),
+                ]
+
+            mi = _MONITORINFO()
+            mi.cbSize = ctypes.sizeof(_MONITORINFO)
+            u32_m.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_MONITORINFO)]
+            u32_m.GetMonitorInfoW.restype = wintypes.BOOL
+            if hmon and u32_m.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                work_x = int(mi.rcWork.left)
+                work_y = int(mi.rcWork.top)
+                work_w = max(640, int(mi.rcWork.right - mi.rcWork.left))
+                work_h = max(480, int(mi.rcWork.bottom - mi.rcWork.top))
+            else:
+                work_rect = wintypes.RECT()
+                if u32_m.SystemParametersInfoW(0x0030, 0, ctypes.byref(work_rect), 0):
+                    work_x = int(work_rect.left)
+                    work_y = int(work_rect.top)
+                    work_w = max(640, int(work_rect.right - work_rect.left))
+                    work_h = max(480, int(work_rect.bottom - work_rect.top))
+
+            mon_dpi = 0
+            if hmon:
+                try:
+                    shcore_m = ctypes.windll.shcore
+                    dx_u, dy_u = wintypes.UINT(0), wintypes.UINT(0)
+                    if shcore_m.GetDpiForMonitor(hmon, 0, ctypes.byref(dx_u), ctypes.byref(dy_u)) == 0:
+                        mon_dpi = int(dx_u.value)
+                except Exception:
+                    pass
+            if mon_dpi <= 0:
+                mon_dpi = int(u32_m.GetDpiForSystem() or 96)
+            dpi_scale = max(1.0, mon_dpi / 96.0)
+            root.tk.call("tk", "scaling", mon_dpi / 72.0)
         except Exception:
             pass
+    elif sys.platform == "darwin":
+        # macOS Aqua Tk uses logical points natively (Retina 2x backing store is automatic).
+        # Reserve space for top macOS Menu Bar (~28pt) and bottom/side Dock (~68pt).
+        dpi_scale = 1.0
+        work_x = 0
+        work_y = 28
+        work_w = max(640, work_w - 24)
+        work_h = max(460, work_h - 96)
     else:
+        # Linux X11 / Xwayland: check Xft.dpi, GDK_SCALE, QT_SCALE_FACTOR, and Tk fpixels
+        detected_dpi = 96.0
         try:
             px_per_in = float(root.winfo_fpixels("1i"))
-            dpi_scale = max(1.0, px_per_in / 96.0)
+            if px_per_in > 48:
+                detected_dpi = max(detected_dpi, px_per_in)
         except Exception:
             pass
+        try:
+            xrdb_dpi = root.option_get("dpi", "Dpi")
+            if xrdb_dpi and float(xrdb_dpi) > 48:
+                detected_dpi = max(detected_dpi, float(xrdb_dpi))
+        except Exception:
+            pass
+        if detected_dpi <= 96.5 and shutil.which("xrdb"):
+            try:
+                xrdb_out = subprocess.check_output(["xrdb", "-query"], text=True, timeout=1.5, stderr=subprocess.DEVNULL)
+                m_dpi = re.search(r"Xft\.dpi:\s*([0-9.]+)", xrdb_out)
+                if m_dpi and float(m_dpi.group(1)) > 48:
+                    detected_dpi = max(detected_dpi, float(m_dpi.group(1)))
+            except Exception:
+                pass
+        for env_k in ("GDK_SCALE", "QT_SCALE_FACTOR"):
+            try:
+                ev = float(os.environ.get(env_k, "0") or "0")
+                if ev >= 1.0:
+                    detected_dpi = max(detected_dpi, ev * 96.0)
+            except Exception:
+                pass
+        dpi_scale = max(1.0, detected_dpi / 96.0)
+        try:
+            root.tk.call("tk", "scaling", (96.0 * dpi_scale) / 72.0)
+        except Exception:
+            pass
+        work_y = int(round(28 * dpi_scale))
+        work_h = max(460, work_h - int(round(72 * dpi_scale)))
 
     def S(px: int | float) -> int:
         return max(1, int(round(px * dpi_scale)))
 
-    # Select clean platform UI typography
+    # Select clean platform UI typography (macOS Aqua uses 72pt/in logical units -> +3pt matches Win/Linux legibility)
     avail_fonts = set(tkfont.families(root))
     if sys.platform == "win32":
         for cand in ("Microsoft YaHei UI", "Segoe UI Variable Display", "Segoe UI"):
@@ -1849,24 +1982,33 @@ def run_gui() -> None:
         else:
             ui_font = "Microsoft YaHei UI"
     elif sys.platform == "darwin":
-        ui_font = "PingFang SC" if "PingFang SC" in avail_fonts else "Helvetica Neue"
+        for cand in ("PingFang SC", "Hiragino Sans GB", "Heiti SC", "SF Pro Text", "Helvetica Neue"):
+            if cand in avail_fonts:
+                ui_font = cand
+                break
+        else:
+            ui_font = "Helvetica Neue"
     else:
-        for cand in ("Noto Sans CJK SC", "WenQuanYi Micro Hei", "Ubuntu", "Sans"):
+        for cand in ("Noto Sans CJK SC", "Source Han Sans CN", "WenQuanYi Micro Hei", "Ubuntu", "DejaVu Sans", "Sans"):
             if cand in avail_fonts:
                 ui_font = cand
                 break
         else:
             ui_font = "Sans"
 
-    f_title = tkfont.Font(root=root, family=ui_font, size=14, weight="bold")
-    f_sub = tkfont.Font(root=root, family=ui_font, size=9)
-    f_card_hdr = tkfont.Font(root=root, family=ui_font, size=11, weight="bold")
-    f_sec_hdr = tkfont.Font(root=root, family=ui_font, size=9, weight="bold")
-    f_item = tkfont.Font(root=root, family=ui_font, size=9)
-    f_item_bold = tkfont.Font(root=root, family=ui_font, size=9, weight="bold")
-    f_small = tkfont.Font(root=root, family=ui_font, size=8)
-    f_small_bold = tkfont.Font(root=root, family=ui_font, size=8, weight="bold")
-    f_cta = tkfont.Font(root=root, family=ui_font, size=10, weight="bold")
+    pt_boost = 3 if sys.platform == "darwin" else 0
+    base_pt = 9 + pt_boost
+    small_pt = 8 + pt_boost
+
+    f_title = tkfont.Font(root=root, family=ui_font, size=14 + pt_boost, weight="bold")
+    f_sub = tkfont.Font(root=root, family=ui_font, size=base_pt)
+    f_card_hdr = tkfont.Font(root=root, family=ui_font, size=11 + pt_boost, weight="bold")
+    f_sec_hdr = tkfont.Font(root=root, family=ui_font, size=base_pt, weight="bold")
+    f_item = tkfont.Font(root=root, family=ui_font, size=base_pt)
+    f_item_bold = tkfont.Font(root=root, family=ui_font, size=base_pt, weight="bold")
+    f_small = tkfont.Font(root=root, family=ui_font, size=small_pt)
+    f_small_bold = tkfont.Font(root=root, family=ui_font, size=small_pt, weight="bold")
+    f_cta = tkfont.Font(root=root, family=ui_font, size=10 + pt_boost, weight="bold")
 
     def ellipsize(text: str, font_obj: tkfont.Font, max_px: int) -> str:
         if max_px <= 24 or not text or font_obj.measure(text) <= max_px:
@@ -2297,7 +2439,9 @@ def run_gui() -> None:
             border_normal: str = "",
             border_hover: str = "",
         ) -> None:
-            w_px, h_px = S(width), S(height)
+            self._min_w_px = S(width)
+            w_px = max(self._min_w_px, font_obj.measure(text) + S(28))
+            h_px = S(height)
             super().__init__(
                 parent,
                 width=w_px,
@@ -2329,6 +2473,8 @@ def run_gui() -> None:
         def set_loading(self, loading: bool, text: str | None = None) -> None:
             if text is not None:
                 self._text = text
+                new_w = max(self._min_w_px, self._font.measure(text) + S(28))
+                self.configure(width=new_w)
             self._state = "disabled" if loading else "normal"
             self.configure(cursor="watch" if loading else "hand2")
             self._redraw()
@@ -2434,6 +2580,7 @@ def run_gui() -> None:
             self.entry = tk.Entry(
                 self,
                 textvariable=self.var,
+                width=6,
                 font=f_item,
                 bg=fill_idle,
                 fg=C_TEXT_PRI,
@@ -2483,11 +2630,12 @@ def run_gui() -> None:
             self._focused = False
             self._sync_state()
 
-        def _on_escape(self, _e: tk.Event) -> None:
+        def _on_escape(self, _e: tk.Event) -> str | None:
             if self.var.get():
                 self.var.set("")
-            else:
-                root.focus_set()
+                return "break"
+            self.winfo_toplevel().focus_set()
+            return None
 
         def _on_canvas_click(self, e: tk.Event) -> None:
             if self._clear_bbox:
@@ -2654,32 +2802,198 @@ def run_gui() -> None:
                 anchor="center",
             )
 
-    # ---- Configure Initial Window Geometry (1080x720 Centered, Min 880x580)
-    win_w, win_h = S(1080), S(720)
-    min_w, min_h = S(880), S(580)
+    # ---- Cross-OS Custom Radio / Checkbox Row (Immune to macOS Dark Mode & HiDPI) ----
+    class ChoiceRow(tk.Frame):
+        def __init__(
+            self,
+            parent: tk.Widget,
+            *,
+            kind: str,  # "radio" | "check"
+            text: str,
+            variable: tk.Variable,
+            value: object = True,
+            bg_color: str = C_BG_CARD,
+            fg_color: str = C_TEXT_PRI,
+            font_obj: tkfont.Font = f_item,
+            wrap_px: int = 0,
+        ) -> None:
+            super().__init__(parent, bg=bg_color, bd=0, highlightthickness=0, cursor="hand2")
+            self._kind = kind
+            self._var = variable
+            self._val = value
+            self._bg = bg_color
+            self._hovered = False
+
+            box_sz = S(20)
+            self._ind = tk.Canvas(
+                self,
+                width=box_sz,
+                height=box_sz,
+                bg=bg_color,
+                bd=0,
+                highlightthickness=0,
+                relief="flat",
+                cursor="hand2",
+            )
+            self._ind.pack(side="left", anchor="n", pady=(S(2), 0))
+
+            lbl_kwargs: dict = {}
+            if wrap_px > 0:
+                lbl_kwargs["wraplength"] = wrap_px
+            self._lbl = tk.Label(
+                self,
+                text=text,
+                font=font_obj,
+                bg=bg_color,
+                fg=fg_color,
+                anchor="w",
+                justify="left",
+                padx=0,
+                pady=0,
+                cursor="hand2",
+                **lbl_kwargs,
+            )
+            self._lbl.pack(side="left", fill="x", expand=True, padx=(S(8), 0))
+
+            for wdg in (self, self._ind, self._lbl):
+                wdg.bind("<ButtonRelease-1>", self._on_toggle)
+                wdg.bind("<Enter>", self._on_enter)
+                wdg.bind("<Leave>", self._on_leave)
+
+            self.bind("<Configure>", self._on_wrap_configure)
+            self._var.trace_add("write", lambda *_: self._redraw())
+            self._redraw()
+
+        def _on_wrap_configure(self, e: tk.Event) -> None:
+            wrap_w = max(S(180), e.width - S(32))
+            if int(self._lbl.cget("wraplength") or 0) != wrap_w:
+                self._lbl.configure(wraplength=wrap_w)
+
+        def _is_checked(self) -> bool:
+            if self._kind == "radio":
+                return str(self._var.get()) == str(self._val)
+            return bool(self._var.get())
+
+        def _on_toggle(self, _e: tk.Event) -> None:
+            if self._kind == "radio":
+                self._var.set(self._val)
+            else:
+                self._var.set(not bool(self._var.get()))
+
+        def _on_enter(self, _e: tk.Event) -> None:
+            if not self._hovered:
+                self._hovered = True
+                self._redraw()
+
+        def _on_leave(self, _e: tk.Event) -> None:
+            if self._hovered:
+                self._hovered = False
+                self._redraw()
+
+        def _redraw(self) -> None:
+            self._ind.delete("all")
+            sz = S(20)
+            checked = self._is_checked()
+            bd_col = C_ACCENT if checked else (C_TEXT_MUTED if self._hovered else C_BORDER_HOVER)
+            if self._kind == "radio":
+                pad = S(2)
+                self._ind.create_oval(
+                    pad,
+                    pad,
+                    sz - pad,
+                    sz - pad,
+                    fill=C_BG_CARD,
+                    outline=bd_col,
+                    width=max(1, S(1.5)),
+                )
+                if checked:
+                    in_pad = S(6)
+                    self._ind.create_oval(
+                        in_pad,
+                        in_pad,
+                        sz - in_pad,
+                        sz - in_pad,
+                        fill=C_ACCENT,
+                        outline="",
+                    )
+            else:
+                pad = S(2)
+                fill_c = C_ACCENT if checked else C_BG_CARD
+                draw_aa_box(
+                    self._ind,
+                    pad,
+                    pad,
+                    sz - pad,
+                    sz - pad,
+                    S(5),
+                    fill=fill_c,
+                    border="" if checked else bd_col,
+                    bg=self._bg,
+                    border_px=max(1, S(1.4)),
+                )
+                if checked:
+                    lw = max(2, S(2))
+                    self._ind.create_line(
+                        sz * 0.27,
+                        sz * 0.52,
+                        sz * 0.44,
+                        sz * 0.69,
+                        sz * 0.75,
+                        sz * 0.33,
+                        fill="#FFFFFF",
+                        width=lw,
+                        capstyle=tk.ROUND,
+                        joinstyle=tk.ROUND,
+                    )
+
+    # ---- Configure Adaptive Window Geometry Across Small Laptops, HiDPI & Multi-Monitor ----
+    chrome_w, chrome_h = S(20), S(46)
+    avail_w = max(S(640), work_w - chrome_w)
+    avail_h = max(S(440), work_h - chrome_h)
+
+    win_w = min(S(1080), int(avail_w * 0.94))
+    win_h = min(S(720), int(avail_h * 0.90))
+    min_w = min(S(740), win_w)
+    min_h = min(S(470), win_h)
     root.minsize(min_w, min_h)
 
-    pos_x = max(0, (root.winfo_screenwidth() - win_w) // 2)
-    pos_y = max(0, (root.winfo_screenheight() - win_h) // 2)
-    if sys.platform == "win32":
-        try:
-            work_rect = wintypes.RECT()
-            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(work_rect), 0):
-                ww = work_rect.right - work_rect.left
-                wh = work_rect.bottom - work_rect.top
-                pos_x = work_rect.left + max(0, (ww - win_w) // 2)
-                pos_y = work_rect.top + max(0, (wh - win_h) // 2)
-        except Exception:
-            pass
+    pos_x = work_x + max(0, (work_w - win_w) // 2)
+    pos_y = work_y + max(0, (work_h - win_h - chrome_h // 2) // 2)
     root.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
 
-    # Configure Flat Modern `clam` Treeview Style for Turn Timeline
+    # Configure Flat Modern `clam` Styles (Treeview + Cross-OS Light Combobox)
     style = ttk.Style(root)
     try:
         if "clam" in style.theme_names():
             style.theme_use("clam")
     except Exception:
         pass
+
+    root.option_add("*TCombobox*Listbox.background", C_BG_CARD)
+    root.option_add("*TCombobox*Listbox.foreground", C_TEXT_PRI)
+    root.option_add("*TCombobox*Listbox.selectBackground", C_BG_SEL)
+    root.option_add("*TCombobox*Listbox.selectForeground", C_TURN_SEL_FG)
+    root.option_add("*TCombobox*Listbox.font", f_item)
+
+    style.configure(
+        "Studio.TCombobox",
+        fieldbackground=C_BG_CARD,
+        background=C_BG_INPUT,
+        foreground=C_TEXT_PRI,
+        bordercolor=C_BORDER,
+        lightcolor=C_BORDER,
+        darkcolor=C_BORDER,
+        arrowcolor=C_TEXT_SEC,
+        arrowsize=S(14),
+        padding=(S(10), S(6)),
+    )
+    style.map(
+        "Studio.TCombobox",
+        fieldbackground=[("readonly", C_BG_CARD), ("focus", C_BG_CARD)],
+        foreground=[("readonly", C_TEXT_PRI)],
+        background=[("active", C_BG_HOVER), ("readonly", C_BG_INPUT)],
+        bordercolor=[("focus", C_BORDER_FOCUS)],
+    )
 
     style.layout("Timeline.Treeview", [("Timeline.Treeview.treearea", {"sticky": "nswe"})])
     style.configure(
@@ -2690,7 +3004,7 @@ def run_gui() -> None:
         borderwidth=0,
         relief="flat",
         rowheight=S(36),
-        font=(ui_font, 9),
+        font=(ui_font, base_pt),
     )
     style.map(
         "Timeline.Treeview",
@@ -2704,7 +3018,7 @@ def run_gui() -> None:
         borderwidth=0,
         relief="flat",
         padding=(S(10), S(8)),
-        font=(ui_font, 9, "bold"),
+        font=(ui_font, base_pt, "bold"),
     )
     style.map(
         "Timeline.Treeview.Heading",
@@ -2723,14 +3037,14 @@ def run_gui() -> None:
     # =======================================================================
     # ROOT LAYOUT: Top Studio Header + Two-Card Split Body
     # =======================================================================
-    outer = tk.Frame(root, bg=C_BG_APP, padx=S(20), pady=S(14))
+    outer_pad_y = S(10) if win_h < S(600) else S(14)
+    outer = tk.Frame(root, bg=C_BG_APP, padx=S(18), pady=outer_pad_y)
     outer.pack(fill="both", expand=True)
 
-    # ---- 1. Top Header Bar ------------------------------------------------
+    # ---- 1. Top Header Bar (Right buttons packed FIRST so they never clip on narrow screens)
     top_bar = tk.Frame(outer, bg=C_BG_APP)
-    top_bar.pack(fill="x", pady=(0, S(12)))
+    top_bar.pack(fill="x", pady=(0, S(10)))
 
-    # Studio geometric Git-branch badge icon on left of header
     hdr_badge = tk.Canvas(
         top_bar,
         width=S(38),
@@ -2742,27 +3056,8 @@ def run_gui() -> None:
     hdr_badge.pack(side="left", padx=(0, S(12)))
     hdr_badge.create_image(0, 0, image=make_branch_badge_img(), anchor="nw")
 
-    hdr_titles = tk.Frame(top_bar, bg=C_BG_APP)
-    hdr_titles.pack(side="left", fill="y")
-    tk.Label(
-        hdr_titles,
-        text="对话分支克隆",
-        font=f_title,
-        bg=C_BG_APP,
-        fg=C_TEXT_PRI,
-        anchor="w",
-    ).pack(anchor="w")
-    tk.Label(
-        hdr_titles,
-        text="从任意历史轮次无损创建独立新分支，免重启秒级直达",
-        font=f_sub,
-        bg=C_BG_APP,
-        fg=C_TEXT_MUTED,
-        anchor="w",
-    ).pack(anchor="w")
-
     hdr_right = tk.Frame(top_bar, bg=C_BG_APP)
-    hdr_right.pack(side="right", anchor="center")
+    hdr_right.pack(side="right", anchor="center", padx=(S(8), 0))
 
     total_count_var = tk.StringVar(value="")
     tk.Label(
@@ -2829,6 +3124,31 @@ def run_gui() -> None:
     )
     export_btn.pack(side="right", padx=(0, S(8)))
 
+    hdr_titles = tk.Frame(top_bar, bg=C_BG_APP)
+    hdr_titles.pack(side="left", fill="x", expand=True)
+    tk.Label(
+        hdr_titles,
+        text="对话分支克隆",
+        font=f_title,
+        bg=C_BG_APP,
+        fg=C_TEXT_PRI,
+        anchor="w",
+    ).pack(anchor="w")
+    raw_hdr_sub_text = "从任意历史轮次无损创建独立新分支，免重启秒级直达"
+    hdr_sub_var = tk.StringVar(value=raw_hdr_sub_text)
+    tk.Label(
+        hdr_titles,
+        textvariable=hdr_sub_var,
+        font=f_sub,
+        bg=C_BG_APP,
+        fg=C_TEXT_MUTED,
+        anchor="w",
+    ).pack(anchor="w", fill="x")
+    hdr_titles.bind(
+        "<Configure>",
+        lambda e: hdr_sub_var.set(ellipsize(raw_hdr_sub_text, f_sub, max(S(80), e.width - S(6)))),
+    )
+
     # ---- 2. Main Split Body (Left Card | Right Card) ----------------------
     split_body = tk.Frame(outer, bg=C_BG_APP)
     split_body.pack(fill="both", expand=True)
@@ -2836,6 +3156,7 @@ def run_gui() -> None:
     # =======================================================================
     # LEFT CARD: 源对话列表 (Live Search + Project-Grouped Modern Canvas List)
     # =======================================================================
+    init_left_w = min(S(334), max(S(236), int(win_w * 0.31)))
     left_card = RoundedCard(
         split_body,
         bg_behind=C_BG_APP,
@@ -2844,7 +3165,7 @@ def run_gui() -> None:
         radius=12,
         pad_x=14,
         pad_y=14,
-        width=S(334),
+        width=init_left_w,
     )
     left_card.pack(side="left", fill="y", padx=(0, S(14)))
     left_card.pack_propagate(False)
@@ -2915,40 +3236,67 @@ def run_gui() -> None:
     )
     right_card.pack(side="left", fill="both", expand=True)
 
-    # Zone A (Top): Card Header + Dynamic Summary Badge
+    # Zone A (Top): Summary Badge packed right FIRST so it never clips on narrow widths
     rc_hdr = tk.Frame(right_card.inner, bg=C_BG_CARD)
     rc_hdr.pack(side="top", fill="x", pady=(0, S(10)))
 
+    summary_badge = SummaryBadge(rc_hdr, bg_behind=C_BG_CARD)
+    summary_badge.pack(side="right", padx=(S(8), 0))
+
     rc_hdr_left = tk.Frame(rc_hdr, bg=C_BG_CARD)
     rc_hdr_left.pack(side="left", fill="x", expand=True)
-    tk.Label(
+    rc_title_lbl = tk.Label(
         rc_hdr_left,
         text="选择分叉节点",
         font=f_card_hdr,
         bg=C_BG_CARD,
         fg=C_TEXT_PRI,
         anchor="w",
-    ).pack(side="left")
+    )
+    rc_title_lbl.pack(side="left")
+    raw_rc_sub_text = "选中任一轮次即可保留至该轮结束，其后聊天自动忽略"
+    rc_sub_var = tk.StringVar(value=raw_rc_sub_text)
     tk.Label(
         rc_hdr_left,
-        text="选中任一轮次即可保留至该轮结束，其后聊天自动忽略",
+        textvariable=rc_sub_var,
         font=f_small,
         bg=C_BG_CARD,
         fg=C_TEXT_MUTED,
         anchor="w",
-    ).pack(side="left", padx=(S(10), 0))
+    ).pack(side="left", fill="x", expand=True, padx=(S(10), 0))
+    rc_hdr_left.bind(
+        "<Configure>",
+        lambda e: rc_sub_var.set(
+            ellipsize(raw_rc_sub_text, f_small, max(0, e.width - rc_title_lbl.winfo_reqwidth() - S(16)))
+            if e.width - rc_title_lbl.winfo_reqwidth() > S(60)
+            else ""
+        ),
+    )
 
-    summary_badge = SummaryBadge(rc_hdr, bg_behind=C_BG_CARD)
-    summary_badge.pack(side="right")
-
-    # Zone D (Packed Bottom First so it NEVER clips on small window heights!)
+    # Zone D (Packed Bottom First; CTA button packed right FIRST so it never clips!)
     bot_divider = tk.Frame(right_card.inner, bg=C_BG_HOVER, height=1)
     bot_action = tk.Frame(right_card.inner, bg=C_BG_CARD)
-    bot_action.pack(side="bottom", fill="x", pady=(S(10), 0))
-    bot_divider.pack(side="bottom", fill="x", pady=(S(12), 0))
+    bot_action.pack(side="bottom", fill="x", pady=(S(8), 0))
+    bot_divider.pack(side="bottom", fill="x", pady=(S(10), 0))
+
+    do_branch_ref: list = []
+    cta_btn = PillButton(
+        bot_action,
+        text="立即创建并打开新对话  →",
+        command=lambda: do_branch_ref[0]() if do_branch_ref else None,
+        width=224,
+        height=40,
+        bg_behind=C_BG_CARD,
+        fill_normal=C_CTA_BG,
+        fill_hover=C_CTA_HOVER,
+        fill_active=C_CTA_ACTIVE,
+        fg="#FFFFFF",
+        font_obj=f_cta,
+    )
+    cta_btn.pack(side="right", anchor="n")
 
     bot_left = tk.Frame(bot_action, bg=C_BG_CARD)
-    bot_left.pack(side="left", fill="x", expand=True, padx=(0, S(16)))
+    bot_left.pack(side="left", fill="x", expand=True, padx=(0, S(14)))
 
     title_row = tk.Frame(bot_left, bg=C_BG_CARD)
     title_row.pack(fill="x")
@@ -2961,7 +3309,6 @@ def run_gui() -> None:
     ).pack(side="left", padx=(0, S(10)))
 
     title_var = tk.StringVar(value="")
-    do_branch_ref: list = []
     title_pill = PillInput(
         title_row,
         textvariable=title_var,
@@ -2986,24 +3333,9 @@ def run_gui() -> None:
     )
     auto_hint_lbl.pack(fill="x", pady=(S(4), 0))
 
-    cta_btn = PillButton(
-        bot_action,
-        text="立即创建并打开新对话  →",
-        command=lambda: do_branch_ref[0]() if do_branch_ref else None,
-        width=224,
-        height=40,
-        bg_behind=C_BG_CARD,
-        fill_normal=C_CTA_BG,
-        fill_hover=C_CTA_HOVER,
-        fill_active=C_CTA_ACTIVE,
-        fg="#FFFFFF",
-        font_obj=f_cta,
-    )
-    cta_btn.pack(side="right", anchor="n")
-
-    # Zone C (Packed above Bottom Action Bar): Full Message Preview Box
+    # Zone C (Packed above Bottom Action Bar): Responsive Full Message Preview Box
     preview_section = tk.Frame(right_card.inner, bg=C_BG_CARD)
-    preview_section.pack(side="bottom", fill="x", pady=(S(12), 0))
+    preview_section.pack(side="bottom", fill="x", pady=(S(10), 0))
 
     prev_hdr = tk.Frame(preview_section, bg=C_BG_CARD)
     prev_hdr.pack(fill="x", pady=(0, S(6)))
@@ -3023,6 +3355,7 @@ def run_gui() -> None:
         fg=C_TEXT_MUTED,
     ).pack(side="right")
 
+    init_prev_h = S(86) if win_h < S(610) else S(124)
     preview_card = RoundedCard(
         preview_section,
         bg_behind=C_BG_CARD,
@@ -3031,10 +3364,22 @@ def run_gui() -> None:
         radius=10,
         pad_x=10,
         pad_y=8,
-        height=S(126),
+        height=init_prev_h,
     )
     preview_card.pack(fill="x")
     preview_card.pack_propagate(False)
+
+    def _on_split_resize(e: tk.Event) -> None:
+        if e.width > S(480):
+            target_lw = min(S(334), max(S(224), int(e.width * 0.31)))
+            if abs(left_card.winfo_width() - target_lw) > 4:
+                left_card.configure(width=target_lw)
+        if e.height > S(280):
+            target_ph = S(78) if e.height < S(450) else (S(98) if e.height < S(530) else S(124))
+            if abs(preview_card.winfo_height() - target_ph) > 4:
+                preview_card.configure(height=target_ph)
+
+    split_body.bind("<Configure>", _on_split_resize)
 
     preview_text = tk.Text(
         preview_card.inner,
@@ -3089,7 +3434,7 @@ def run_gui() -> None:
     turn_tree.column("preview", width=S(350), minwidth=S(180), anchor="w", stretch=True)
 
     turn_tree.tag_configure("hover_row", background=C_BG_SUBTLE)
-    turn_tree.tag_configure("latest_row", font=(ui_font, 9, "bold"))
+    turn_tree.tag_configure("latest_row", font=(ui_font, base_pt, "bold"))
     turn_tree.tag_configure("running_row", foreground=C_TEXT_MUTED)
 
     right_vsb = ModernScrollbar(timeline_wrap, command=turn_tree.yview, track_bg=C_BG_CARD)
@@ -3540,16 +3885,199 @@ def run_gui() -> None:
         return None
 
     def _on_mousewheel(e: tk.Event) -> str | None:
+        if e.delta == 0:
+            return None
+        grab_w = root.grab_current()
+        if grab_w is not None and grab_w != root:
+            return None
         if sys.platform == "darwin":
             steps = -1 if e.delta > 0 else 1
         else:
             steps = -int(e.delta / 120) if abs(e.delta) >= 120 else (-1 if e.delta > 0 else 1)
         return _dispatch_scroll(e.x_root, e.y_root, steps)
 
+    def _on_linux_scroll(e: tk.Event, steps: int) -> str | None:
+        grab_w = root.grab_current()
+        if grab_w is not None and grab_w != root:
+            return None
+        return _dispatch_scroll(e.x_root, e.y_root, steps)
+
     root.bind_all("<MouseWheel>", _on_mousewheel)
     if sys.platform.startswith("linux"):
-        root.bind_all("<Button-4>", lambda e: _dispatch_scroll(e.x_root, e.y_root, -2))
-        root.bind_all("<Button-5>", lambda e: _dispatch_scroll(e.x_root, e.y_root, 2))
+        root.bind_all("<Button-4>", lambda e: _on_linux_scroll(e, -2))
+        root.bind_all("<Button-5>", lambda e: _on_linux_scroll(e, 2))
+
+    def _focus_main_search(_e: tk.Event) -> str | None:
+        if root.grab_current() in (None, root):
+            search_pill.focus_input()
+            return "break"
+        return None
+
+    root.bind("<Control-f>", _focus_main_search)
+    if sys.platform == "darwin":
+        root.bind("<Command-f>", _focus_main_search)
+
+    # ---- Win32 Real Antigravity Icon + Win11 DWM Rounded Light Chrome -----
+    extracted_icons: list[int] = []
+
+    def _apply_win32_studio_chrome(target_win: tk.Misc | None = None) -> None:
+        if sys.platform != "win32":
+            return
+        win = target_win or root
+        try:
+            u32 = ctypes.windll.user32
+            s32 = ctypes.windll.shell32
+            dwm = ctypes.windll.dwmapi
+
+            u32.GetParent.argtypes = [wintypes.HWND]
+            u32.GetParent.restype = wintypes.HWND
+            u32.SendMessageW.argtypes = [
+                wintypes.HWND,
+                wintypes.UINT,
+                wintypes.WPARAM,
+                wintypes.LPARAM,
+            ]
+            u32.SendMessageW.restype = wintypes.LPARAM
+            dwm.DwmSetWindowAttribute.argtypes = [
+                wintypes.HWND,
+                wintypes.DWORD,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+            ]
+            dwm.DwmSetWindowAttribute.restype = ctypes.c_long
+
+            top_hwnd = u32.GetParent(win.winfo_id()) or win.winfo_id()
+            if not top_hwnd:
+                return
+
+            # Win11 DWM Rounded Corners + Matching #F8F9FB Caption & #111827 Title Text
+            corner_pref = ctypes.c_int(2)  # DWMWCP_ROUND
+            caption_col = ctypes.c_uint32(0x00FBF9F8)  # COLORREF for #F8F9FB
+            text_col = ctypes.c_uint32(0x00271811)  # COLORREF for #111827
+            dwm.DwmSetWindowAttribute(top_hwnd, 33, ctypes.byref(corner_pref), ctypes.sizeof(corner_pref))
+            dwm.DwmSetWindowAttribute(top_hwnd, 35, ctypes.byref(caption_col), ctypes.sizeof(caption_col))
+            dwm.DwmSetWindowAttribute(top_hwnd, 36, ctypes.byref(text_col), ctypes.sizeof(text_col))
+
+            # Extract Real Antigravity Icon from Antigravity.exe
+            if not extracted_icons:
+                exe_path = _find_antigravity_exe()
+                if exe_path is not None:
+                    s32.ExtractIconExW.argtypes = [
+                        wintypes.LPCWSTR,
+                        ctypes.c_int,
+                        ctypes.POINTER(wintypes.HICON),
+                        ctypes.POINTER(wintypes.HICON),
+                        wintypes.UINT,
+                    ]
+                    s32.ExtractIconExW.restype = wintypes.UINT
+                    hbig = wintypes.HICON()
+                    hsmall = wintypes.HICON()
+                    cnt = s32.ExtractIconExW(
+                        str(exe_path), 0, ctypes.byref(hbig), ctypes.byref(hsmall), 1
+                    )
+                    if cnt > 0:
+                        if hsmall.value:
+                            extracted_icons.append(int(hsmall.value))
+                        if hbig.value:
+                            extracted_icons.append(int(hbig.value))
+
+            WM_SETICON = 0x0080
+            if len(extracted_icons) >= 2:
+                h_sm, h_bg = extracted_icons[0], extracted_icons[1]
+            elif len(extracted_icons) == 1:
+                h_sm = h_bg = extracted_icons[0]
+            else:
+                h_sm = h_bg = 0
+
+            if h_sm or h_bg:
+                if h_sm:
+                    u32.SendMessageW(top_hwnd, WM_SETICON, 0, h_sm)
+                if h_bg:
+                    u32.SendMessageW(top_hwnd, WM_SETICON, 1, h_bg)
+                if win == root:
+                    try:
+                        set_cls = getattr(u32, "SetClassLongPtrW", None)
+                        if set_cls is not None:
+                            set_cls.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+                            set_cls.restype = ctypes.c_ssize_t
+                            if h_bg:
+                                set_cls(top_hwnd, -14, h_bg)  # GCLP_HICON
+                            if h_sm:
+                                set_cls(top_hwnd, -34, h_sm)  # GCLP_HICONSM
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _park_root_for_auto_open() -> str:
+        """Hide root cleanly before foreground handoff to Antigravity without corner clamping on macOS/Linux."""
+        saved_geom = root.geometry()
+        if sys.platform == "win32":
+            try:
+                root.attributes("-alpha", 0.0)
+            except Exception:
+                pass
+            try:
+                root.geometry("+20000+20000")
+                root.update_idletasks()
+            except Exception:
+                pass
+        else:
+            root.withdraw()
+            root.update_idletasks()
+        return saved_geom
+
+    def _restore_root_after_failed_open(saved_geom: str) -> None:
+        try:
+            root.geometry(saved_geom)
+        except Exception:
+            pass
+        if sys.platform == "win32":
+            try:
+                root.attributes("-alpha", 1.0)
+            except Exception:
+                pass
+        root.deiconify()
+        root.update_idletasks()
+        _apply_win32_studio_chrome(root)
+        root.lift()
+
+    def _fit_and_place_modal(dlg: tk.Toplevel, body: tk.Widget, pref_w: int) -> None:
+        """Size modal strictly from content height + clamp inside active monitor work-area (X11 grab-safe)."""
+        dlg.update_idletasks()
+        req_w = body.winfo_reqwidth()
+        req_h = body.winfo_reqheight()
+        dw = min(avail_w, max(S(380), S(pref_w), req_w))
+        dh = min(avail_h, max(S(240), req_h + S(8)))
+
+        rx, ry = root.winfo_x(), root.winfo_y()
+        rw, rh = max(win_w, root.winfo_width()), max(win_h, root.winfo_height())
+        raw_dx = rx + (rw - dw) // 2
+        raw_dy = ry + (rh - dh) // 2
+        max_dx = max(work_x + S(8), work_x + work_w - dw - S(8))
+        max_dy = max(work_y + S(8), work_y + work_h - dh - S(30))
+        dx = max(work_x + S(8), min(raw_dx, max_dx))
+        dy = max(work_y + S(8), min(raw_dy, max_dy))
+
+        dlg.minsize(min(S(380), dw), min(dh, avail_h))
+        dlg.resizable(True, True)
+        dlg.geometry(f"{dw}x{dh}+{dx}+{dy}")
+        dlg.transient(root)
+        dlg.deiconify()
+        dlg.update()
+        if not dlg.winfo_viewable():
+            try:
+                dlg.wait_visibility()
+            except Exception:
+                pass
+        _apply_win32_studio_chrome(dlg)
+        try:
+            dlg.grab_set()
+        except Exception:
+            pass
+        dlg.lift()
+        dlg.focus_force()
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
 
     # ---- Reload & Branch Actions ------------------------------------------
     def reload_conversations() -> None:
@@ -3616,22 +4144,13 @@ def run_gui() -> None:
             root.update()
         except Exception:
             pass
-        # Move window off-screen while retaining Win32 foreground ownership so zero occlusion can occur
-        saved_geom = root.geometry()
-        try:
-            root.geometry("+20000+20000")
-            root.update_idletasks()
-        except Exception:
-            pass
+
+        saved_geom = _park_root_for_auto_open()
         opened = auto_open_in_antigravity(res["search_token"], surface=res_surface, new_cid=res["new_cid"])
         root.withdraw()
         root.update_idletasks()
         if not opened:
-            try:
-                root.geometry(saved_geom)
-            except Exception:
-                pass
-            root.deiconify()
+            _restore_root_after_failed_open(saved_geom)
             if res_surface == "cli":
                 messagebox.showinfo(
                     "CLI 分支已创建",
@@ -3697,62 +4216,82 @@ def run_gui() -> None:
         sq_cnt = len(tree_info["side_question_ids"])
 
         dlg = tk.Toplevel(root)
+        dlg.withdraw()
         dlg.title("导出对话分享包 — Antigravity")
         dlg.configure(bg=C_BG_APP)
-        dlg.transient(root)
-        dlg.grab_set()
-        dlg.resizable(False, False)
 
-        dw, dh = S(490), S(350 if child_cnt > 0 else 310)
-        dx = root.winfo_x() + max(20, (root.winfo_width() - dw) // 2)
-        dy = root.winfo_y() + max(20, (root.winfo_height() - dh) // 2)
-        dlg.geometry(f"{dw}x{dh}+{dx}+{dy}")
+        dw_target = min(avail_w, max(S(380), S(520)))
+        inner_w = max(S(260), dw_target - S(44))
 
         body = tk.Frame(dlg, bg=C_BG_APP, padx=S(20), pady=S(16))
         body.pack(fill="both", expand=True)
 
-        tk.Label(body, text="导出对话分享给其他 Antigravity 用户", font=f_card_hdr, bg=C_BG_APP, fg=C_TEXT_PRI, anchor="w").pack(fill="x")
-        range_lbl = f"第 1 ~ {sel_turn_num} 轮（共 {total_t} 轮）" if is_trunc else f"完整全部 {total_t} 轮"
+        # Pack bottom button row FIRST so buttons never clip on small screens or large system fonts
+        btn_row = tk.Frame(body, bg=C_BG_APP)
+        btn_row.pack(side="bottom", fill="x", pady=(S(12), 0))
+
         tk.Label(
             body,
-            text=f"源对话：{convo.get('title') or '(无标题)'}   ·   范围：{range_lbl}",
+            text="导出对话分享给其他 Antigravity 用户",
+            font=f_card_hdr,
+            bg=C_BG_APP,
+            fg=C_TEXT_PRI,
+            anchor="w",
+        ).pack(fill="x")
+
+        range_lbl = f"第 1 ~ {sel_turn_num} 轮（共 {total_t} 轮）" if is_trunc else f"完整全部 {total_t} 轮"
+        short_src_title = ellipsize(convo.get("title") or "(无标题)", f_small, max(S(150), inner_w - S(190)))
+        sub_lbl = tk.Label(
+            body,
+            text=f"源对话：{short_src_title}   ·   范围：{range_lbl}",
             font=f_small,
             bg=C_BG_APP,
             fg=C_TEXT_MUTED,
             anchor="w",
-        ).pack(fill="x", pady=(S(4), S(12)))
+            justify="left",
+            wraplength=inner_w,
+        )
+        sub_lbl.pack(fill="x", pady=(S(4), S(12)))
 
         fmt_var = tk.StringVar(value="agyshare")
-        fmt_box = tk.Frame(body, bg=C_BG_CARD, highlightbackground=C_BORDER, highlightthickness=1, padx=S(12), pady=S(10))
-        fmt_box.pack(fill="x", pady=(0, S(10)))
-        tk.Radiobutton(
+        fmt_box = tk.Frame(
+            body,
+            bg=C_BG_CARD,
+            highlightbackground=C_BORDER,
+            highlightcolor=C_BORDER,
+            highlightthickness=1,
+            padx=S(14),
+            pady=S(12),
+        )
+        fmt_box.pack(fill="x", pady=(0, S(12)))
+        ChoiceRow(
             fmt_box,
+            kind="radio",
             text="原生可续聊分享包 (.agyshare)  — 对方导入后直接原样继续聊",
             variable=fmt_var,
             value="agyshare",
-            font=f_item_bold,
-            bg=C_BG_CARD,
-            fg=C_TEXT_PRI,
-            activebackground=C_BG_CARD,
-            anchor="w",
+            bg_color=C_BG_CARD,
+            fg_color=C_TEXT_PRI,
+            font_obj=f_item_bold,
+            wrap_px=max(S(180), inner_w - S(62)),
         ).pack(fill="x")
-        tk.Radiobutton(
+        ChoiceRow(
             fmt_box,
+            kind="radio",
             text="便携接力 Markdown (.md)  — 无需工具，任何 AI 可直接阅读接力",
             variable=fmt_var,
             value="md",
-            font=f_item,
-            bg=C_BG_CARD,
-            fg=C_TEXT_SEC,
-            activebackground=C_BG_CARD,
-            anchor="w",
-        ).pack(fill="x", pady=(S(4), 0))
+            bg_color=C_BG_CARD,
+            fg_color=C_TEXT_SEC,
+            font_obj=f_item,
+            wrap_px=max(S(180), inner_w - S(62)),
+        ).pack(fill="x", pady=(S(8), 0))
 
         include_swarm_var = tk.BooleanVar(value=True)
         redact_var = tk.BooleanVar(value=True)
 
         opt_box = tk.Frame(body, bg=C_BG_APP)
-        opt_box.pack(fill="x", pady=(S(2), S(12)))
+        opt_box.pack(fill="x", pady=(S(2), S(4)))
 
         if child_cnt > 0:
             detail_parts = []
@@ -3763,32 +4302,27 @@ def run_gui() -> None:
                 detail_parts.append(f"{other_sub} 个子代理")
             if sq_cnt:
                 detail_parts.append(f"{sq_cnt} 个侧边提问")
-            tk.Checkbutton(
+            ChoiceRow(
                 opt_box,
+                kind="check",
                 text=f"连带迁移全部子对话（{' / '.join(detail_parts)}，取消勾选则为轻量主对话模式）",
                 variable=include_swarm_var,
-                font=f_item,
-                bg=C_BG_APP,
-                fg=C_TEXT_PRI,
-                activebackground=C_BG_APP,
-                anchor="w",
-                wraplength=S(430),
-                justify="left",
-            ).pack(fill="x", pady=(0, S(4)))
+                bg_color=C_BG_APP,
+                fg_color=C_TEXT_PRI,
+                font_obj=f_item,
+                wrap_px=max(S(180), inner_w - S(34)),
+            ).pack(fill="x", pady=(0, S(8)))
 
-        tk.Checkbutton(
+        ChoiceRow(
             opt_box,
+            kind="check",
             text="自动匿名化本机路径并扫描脱敏 API Key / Token 等敏感凭据（推荐）",
             variable=redact_var,
-            font=f_item,
-            bg=C_BG_APP,
-            fg=C_TEXT_SEC,
-            activebackground=C_BG_APP,
-            anchor="w",
+            bg_color=C_BG_APP,
+            fg_color=C_TEXT_SEC,
+            font_obj=f_item,
+            wrap_px=max(S(180), inner_w - S(34)),
         ).pack(fill="x")
-
-        btn_row = tk.Frame(body, bg=C_BG_APP)
-        btn_row.pack(side="bottom", fill="x")
 
         def _do_export() -> None:
             fmt = fmt_var.get()
@@ -3876,6 +4410,8 @@ def run_gui() -> None:
             border_hover=C_BORDER_HOVER,
         ).pack(side="right", padx=(0, S(8)))
 
+        _fit_and_place_modal(dlg, body, 520)
+
     def open_import_share_dialog() -> None:
         try:
             sc_mod = _load_share_mod()
@@ -3903,46 +4439,103 @@ def run_gui() -> None:
             proj_choices.append((f"📁 {pname}", pid))
 
         dlg = tk.Toplevel(root)
+        dlg.withdraw()
         dlg.title("导入对话分享包 — Antigravity")
         dlg.configure(bg=C_BG_APP)
-        dlg.transient(root)
-        dlg.grab_set()
-        dlg.resizable(False, False)
 
-        dw, dh = S(520), S(380)
-        dx = root.winfo_x() + max(20, (root.winfo_width() - dw) // 2)
-        dy = root.winfo_y() + max(20, (root.winfo_height() - dh) // 2)
-        dlg.geometry(f"{dw}x{dh}+{dx}+{dy}")
+        dw_target = min(avail_w, max(S(380), S(540)))
+        inner_w = max(S(260), dw_target - S(44))
 
         body = tk.Frame(dlg, bg=C_BG_APP, padx=S(20), pady=S(16))
         body.pack(fill="both", expand=True)
 
-        tk.Label(body, text=f"准备导入：{manifest.get('title', '未命名对话')}", font=f_card_hdr, bg=C_BG_APP, fg=C_TEXT_PRI, anchor="w").pack(fill="x")
+        # Pack bottom button row FIRST so buttons never clip on small screens or large system fonts
+        btn_row = tk.Frame(body, bg=C_BG_APP)
+        btn_row.pack(side="bottom", fill="x", pady=(S(14), 0))
+
+        hdr_text = ellipsize(f"准备导入：{manifest.get('title', '未命名对话')}", f_card_hdr, inner_w)
+        tk.Label(
+            body,
+            text=hdr_text,
+            font=f_card_hdr,
+            bg=C_BG_APP,
+            fg=C_TEXT_PRI,
+            anchor="w",
+        ).pack(fill="x")
 
         meta_parts = [f"共 {manifest.get('kept_turns', '?')} 轮 ({manifest.get('step_count', 0)} 步)"]
         if manifest.get("child_count"):
             meta_parts.append(f"含 {manifest['child_count']} 个 Swarm/子代理/侧边提问")
         if manifest.get("workspace_name_hint"):
             meta_parts.append(f"原项目目录：{manifest['workspace_name_hint']}")
-        tk.Label(body, text="  ·  ".join(meta_parts), font=f_small, bg=C_BG_APP, fg=C_TEXT_MUTED, anchor="w").pack(fill="x", pady=(S(4), S(14)))
+        tk.Label(
+            body,
+            text="  ·  ".join(meta_parts),
+            font=f_small,
+            bg=C_BG_APP,
+            fg=C_TEXT_MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=inner_w,
+        ).pack(fill="x", pady=(S(4), S(14)))
 
-        # Custom title
-        tk.Label(body, text="导入后的对话标题（留空则自动附加 [导入]）：", font=f_sec_hdr, bg=C_BG_APP, fg=C_TEXT_SEC, anchor="w").pack(fill="x")
+        # Custom title (PillInput avoids macOS Dark Mode raw tk.Entry contrast bugs)
+        tk.Label(
+            body,
+            text="导入后的对话标题（留空则自动附加 [导入]）：",
+            font=f_sec_hdr,
+            bg=C_BG_APP,
+            fg=C_TEXT_SEC,
+            anchor="w",
+        ).pack(fill="x")
         imp_title_var = tk.StringVar(value="")
-        tk.Entry(body, textvariable=imp_title_var, font=f_item, bg=C_BG_CARD, fg=C_TEXT_PRI, relief="solid", bd=1).pack(fill="x", pady=(S(4), S(10)), ipady=S(5))
+        imp_title_pill = PillInput(
+            body,
+            textvariable=imp_title_var,
+            placeholder="输入自定义标题（留空则自动附加 [导入]）...",
+            bg_behind=C_BG_APP,
+            fill_idle=C_BG_CARD,
+            fill_focus=C_BG_CARD,
+            height=36,
+            show_search_icon=False,
+            on_return=lambda: _do_import(),
+        )
+        imp_title_pill.pack(fill="x", pady=(S(4), S(12)))
 
-        # Project binding
-        tk.Label(body, text="归属到本机项目：", font=f_sec_hdr, bg=C_BG_APP, fg=C_TEXT_SEC, anchor="w").pack(fill="x")
+        # Project binding (Explicit Studio.TCombobox light styling across OS themes)
+        tk.Label(
+            body,
+            text="归属到本机项目：",
+            font=f_sec_hdr,
+            bg=C_BG_APP,
+            fg=C_TEXT_SEC,
+            anchor="w",
+        ).pack(fill="x")
         proj_combo_var = tk.StringVar(value=proj_choices[0][0])
-        proj_combo = ttk.Combobox(body, textvariable=proj_combo_var, values=[lbl for lbl, _ in proj_choices], state="readonly", font=f_item)
-        proj_combo.pack(fill="x", pady=(S(4), S(10)))
+        proj_combo = ttk.Combobox(
+            body,
+            textvariable=proj_combo_var,
+            values=[lbl for lbl, _ in proj_choices],
+            state="readonly",
+            style="Studio.TCombobox",
+            font=f_item,
+        )
+        proj_combo.pack(fill="x", pady=(S(4), S(12)))
 
-        # Optional local workspace directory remap
-        tk.Label(body, text="本地工作区路径重映射（选定项目时自动带出目录，也可手动修改）：", font=f_sec_hdr, bg=C_BG_APP, fg=C_TEXT_SEC, anchor="w").pack(fill="x")
+        # Optional local workspace directory remap (Browse button packed right FIRST so it never clips)
+        tk.Label(
+            body,
+            text="本地工作区路径重映射（选定项目时自动带出目录，也可手动修改）：",
+            font=f_sec_hdr,
+            bg=C_BG_APP,
+            fg=C_TEXT_SEC,
+            anchor="w",
+            justify="left",
+            wraplength=inner_w,
+        ).pack(fill="x")
         ws_row = tk.Frame(body, bg=C_BG_APP)
-        ws_row.pack(fill="x", pady=(S(4), S(14)))
+        ws_row.pack(fill="x", pady=(S(4), S(4)))
         ws_var = tk.StringVar(value="")
-        tk.Entry(ws_row, textvariable=ws_var, font=f_item, bg=C_BG_CARD, fg=C_TEXT_PRI, relief="solid", bd=1).pack(side="left", fill="x", expand=True, ipady=S(5))
         last_auto_ws = [""]
 
         def _on_proj_selected(_e: object = None) -> None:
@@ -3968,8 +4561,8 @@ def run_gui() -> None:
             ws_row,
             text="浏览...",
             command=_pick_ws,
-            width=72,
-            height=30,
+            width=76,
+            height=36,
             bg_behind=C_BG_APP,
             fill_normal=C_BG_CARD,
             fill_hover=C_BG_HOVER,
@@ -3980,8 +4573,18 @@ def run_gui() -> None:
             border_hover=C_BORDER_HOVER,
         ).pack(side="right", padx=(S(8), 0))
 
-        btn_row = tk.Frame(body, bg=C_BG_APP)
-        btn_row.pack(side="bottom", fill="x")
+        ws_pill = PillInput(
+            ws_row,
+            textvariable=ws_var,
+            placeholder="可选：本地代码仓库目录路径...",
+            bg_behind=C_BG_APP,
+            fill_idle=C_BG_CARD,
+            fill_focus=C_BG_CARD,
+            height=36,
+            show_search_icon=False,
+            on_return=lambda: _do_import(),
+        )
+        ws_pill.pack(side="left", fill="x", expand=True)
 
         def _do_import() -> None:
             sel_label = proj_combo_var.get()
@@ -4009,29 +4612,20 @@ def run_gui() -> None:
             except Exception:
                 pass
 
-            # Release modal grab & park root off-screen BEFORE Win32 handoff so nothing occludes Antigravity's toolbar
-            saved_geom = root.geometry()
+            # Release modal grab & park root cleanly before handoff so nothing occludes Antigravity's toolbar
             try:
                 dlg.grab_release()
             except Exception:
                 pass
             dlg.withdraw()
-            try:
-                root.geometry("+20000+20000")
-                root.update_idletasks()
-            except Exception:
-                pass
+            saved_geom = _park_root_for_auto_open()
 
             opened = auto_open_in_antigravity(res["search_token"], surface="app", new_cid=res["new_cid"])
             dlg.destroy()
             root.withdraw()
             root.update_idletasks()
             if not opened:
-                try:
-                    root.geometry(saved_geom)
-                except Exception:
-                    pass
-                root.deiconify()
+                _restore_root_after_failed_open(saved_geom)
                 messagebox.showinfo(
                     "导入成功",
                     f"已成功导入对话：{res['new_title']}\n"
@@ -4071,98 +4665,10 @@ def run_gui() -> None:
             border_hover=C_BORDER_HOVER,
         ).pack(side="right", padx=(0, S(8)))
 
+        _fit_and_place_modal(dlg, body, 540)
+
     export_cb_ref.append(open_export_share_dialog)
     import_cb_ref.append(open_import_share_dialog)
-
-    # ---- Win32 Real Antigravity Icon + Win11 DWM Rounded Light Chrome -----
-    extracted_icons: list[int] = []
-
-    def _apply_win32_studio_chrome() -> None:
-        if sys.platform != "win32":
-            return
-        try:
-            u32 = ctypes.windll.user32
-            s32 = ctypes.windll.shell32
-            dwm = ctypes.windll.dwmapi
-
-            u32.GetParent.argtypes = [wintypes.HWND]
-            u32.GetParent.restype = wintypes.HWND
-            u32.SendMessageW.argtypes = [
-                wintypes.HWND,
-                wintypes.UINT,
-                wintypes.WPARAM,
-                wintypes.LPARAM,
-            ]
-            u32.SendMessageW.restype = wintypes.LPARAM
-            dwm.DwmSetWindowAttribute.argtypes = [
-                wintypes.HWND,
-                wintypes.DWORD,
-                wintypes.LPCVOID,
-                wintypes.DWORD,
-            ]
-            dwm.DwmSetWindowAttribute.restype = ctypes.c_long
-
-            top_hwnd = u32.GetParent(root.winfo_id()) or root.winfo_id()
-            if not top_hwnd:
-                return
-
-            # Win11 DWM Rounded Corners + Matching #F8F9FB Caption & #111827 Title Text
-            corner_pref = ctypes.c_int(2)  # DWMWCP_ROUND
-            caption_col = ctypes.c_uint32(0x00FBF9F8)  # COLORREF for #F8F9FB
-            text_col = ctypes.c_uint32(0x00271811)  # COLORREF for #111827
-            dwm.DwmSetWindowAttribute(top_hwnd, 33, ctypes.byref(corner_pref), ctypes.sizeof(corner_pref))
-            dwm.DwmSetWindowAttribute(top_hwnd, 35, ctypes.byref(caption_col), ctypes.sizeof(caption_col))
-            dwm.DwmSetWindowAttribute(top_hwnd, 36, ctypes.byref(text_col), ctypes.sizeof(text_col))
-
-            # Extract Real Antigravity Icon from Antigravity.exe
-            if not extracted_icons:
-                exe_path = _find_antigravity_exe()
-                if exe_path is not None:
-                    s32.ExtractIconExW.argtypes = [
-                        wintypes.LPCWSTR,
-                        ctypes.c_int,
-                        ctypes.POINTER(wintypes.HICON),
-                        ctypes.POINTER(wintypes.HICON),
-                        wintypes.UINT,
-                    ]
-                    s32.ExtractIconExW.restype = wintypes.UINT
-                    hbig = wintypes.HICON()
-                    hsmall = wintypes.HICON()
-                    cnt = s32.ExtractIconExW(
-                        str(exe_path), 0, ctypes.byref(hbig), ctypes.byref(hsmall), 1
-                    )
-                    if cnt > 0:
-                        if hsmall.value:
-                            extracted_icons.append(int(hsmall.value))
-                        if hbig.value:
-                            extracted_icons.append(int(hbig.value))
-
-            WM_SETICON = 0x0080
-            if len(extracted_icons) >= 2:
-                h_sm, h_bg = extracted_icons[0], extracted_icons[1]
-            elif len(extracted_icons) == 1:
-                h_sm = h_bg = extracted_icons[0]
-            else:
-                h_sm = h_bg = 0
-
-            if h_sm or h_bg:
-                if h_sm:
-                    u32.SendMessageW(top_hwnd, WM_SETICON, 0, h_sm)
-                if h_bg:
-                    u32.SendMessageW(top_hwnd, WM_SETICON, 1, h_bg)
-                try:
-                    set_cls = getattr(u32, "SetClassLongPtrW", None)
-                    if set_cls is not None:
-                        set_cls.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
-                        set_cls.restype = ctypes.c_ssize_t
-                        if h_bg:
-                            set_cls(top_hwnd, -14, h_bg)  # GCLP_HICON
-                        if h_sm:
-                            set_cls(top_hwnd, -34, h_sm)  # GCLP_HICONSM
-                except Exception:
-                    pass
-        except Exception:
-            pass
 
     # ---- Linux Real Antigravity Window Icon (from app.asar / cache) ------
     linux_icon_ref: list[tk.PhotoImage] = []

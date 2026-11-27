@@ -56,12 +56,12 @@ powershell -ExecutionPolicy Bypass -File .\branch_conversation\uninstall_branch_
 
 ---
 
-### Ubuntu / Debian Linux
+### macOS 与 Ubuntu / Linux
 
 打开终端，进入本仓库目录后运行：
 
 ```bash
-# 一键安装分支工具与全局 AI 技能（若缺少图形界面库会自动提示或安装 python3-tk）
+# 一键安装分支工具与全局 AI 技能（若缺少图形界面库会自动提示安装 python-tk / python3-tk）
 bash ./branch_conversation/install_branch_tool.sh
 ```
 
@@ -195,10 +195,13 @@ python "$env:USERPROFILE\mcp-gui-workspace\antigravity-branch\share_conversation
 </details>
 
 <details>
-<summary><b>Q5：Linux 下运行 <code>--gui</code> 提示未检测到 <code>tkinter</code> 怎么办？</b></summary>
+<summary><b>Q5：macOS 或 Linux 下运行 <code>--gui</code> 提示未检测到 <code>tkinter</code> 怎么办？</b></summary>
 
-部分精简版 Linux 系统默认未预装 Python 的图形界面模块，只需在终端运行一行命令即可补齐：
+部分 Homebrew Python 或精简版 Linux 系统默认未预装 Python 的图形界面模块（注：命令行与聊天框 AI 技能不受影响，直接可用）。如需打开可视化窗口，只需在终端运行一行命令补齐：
 ```bash
+# macOS (Homebrew)
+brew install python-tk
+
 # Ubuntu / Debian
 sudo apt-get update && sudo apt-get install -y python3-tk
 ```
